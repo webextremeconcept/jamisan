@@ -1,0 +1,1984 @@
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║                     JAMISAN ERP — DATABASE SCHEMA                       ║
+// ║                     Day 2 Spec | Version 1.1                            ║
+// ║                                                                          ║
+// ║  Read this file before touching any code in a Claude Code session.       ║
+// ║  Tables are grouped by domain. Refs are at the bottom of each section.  ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 1 — COUNTRIES AND ADDRESS HIERARCHY
+//
+// Supports multi-country expansion from Day 1.
+// Nigeria is the first country. Ghana, Kenya etc can be added without
+// restructuring the schema.
+//
+// admin_level_1 = States (Nigeria) / Regions (Ghana) / Provinces etc
+// admin_level_2 = LGAs (Nigeria) / Districts (Ghana) etc
+//
+// The label for each level is stored on the countries table so the UI
+// can display "State" for Nigerian orders and "Region" for Ghanaian orders
+// without any code changes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table countries {
+  id integer [primary key, increment]
+  country_code varchar(10) [unique, not null, note: 'ISO code e.g. NG, GH, KE']
+  country_name varchar(100) [not null]
+  admin_level_1_label varchar(50) [not null, note: 'State for Nigeria, Region for Ghana']
+  admin_level_2_label varchar(50) [not null, note: 'LGA for Nigeria, District for Ghana']
+  phone_code varchar(10) [not null, note: '+234 for Nigeria, +233 for Ghana']
+  currency_code varchar(10) [not null, note: 'NGN, GHS, KES etc']
+  timezone varchar(50) [not null, note: 'Africa/Lagos, Africa/Accra etc']
+  is_active boolean [default: true]
+  created_at timestamp [default: `now()`]
+}
+
+Table admin_level_1 {
+  // States, Regions, Provinces — depends on country
+  // Nigeria has 36 states + FCT = 37 records at seed
+  id integer [primary key, increment]
+  country_id integer [not null]
+  name varchar(100) [not null]
+  code varchar(20) [note: 'e.g. LA for Lagos, AB for Abuja']
+  is_active boolean [default: true]
+}
+
+Table admin_level_2 {
+  // LGAs, Districts, Divisions — depends on country
+  // Nigeria has 774 LGAs total across all states
+  id integer [primary key, increment]
+  admin_level_1_id integer [not null]
+  name varchar(100) [not null]
+  is_active boolean [default: true]
+}
+
+// Refs — Section 1
+Ref: admin_level_1.country_id > countries.id
+Ref: admin_level_2.admin_level_1_id > admin_level_1.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 2 — REFERENCE / LOOKUP TABLES
+//
+// These are the equivalent of your Engine Sheet in Google Sheets.
+// They hold dropdown values that feed into orders, products, and other tables.
+// All managed by Directors in the Admin panel.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table departments {
+  // Gadgets, Beauty/Fashion — expandable without restructuring permissions
+  id integer [primary key, increment]
+  name varchar(100) [not null]
+  is_active boolean [default: true]
+  created_at timestamp [default: `now()`]
+}
+
+Table brands {
+  // Each brand belongs to one department and one niche
+  // A brand never crosses niches — this is a business rule
+  id integer [primary key, increment]
+  name varchar(100) [not null]
+  department_id integer [not null]
+  niche_id integer [not null]
+  is_active boolean [default: true]
+}
+
+Table niches {
+  // Marketing niche classification — e.g. Beauty, Tech, Automotive
+  // Niches are firmly within brands — no cross-niche products
+  id integer [primary key, increment]
+  name varchar(100) [not null]
+  is_active boolean [default: true]
+}
+
+Table order_sources {
+  // How the order came in — Jamisan Form, WhatsApp Form, Social Media
+  // Must align with Pabbly webhook source values
+  id integer [primary key, increment]
+  name varchar(100) [not null]
+  is_active boolean [default: true]
+}
+
+Table shipping_types {
+  // FREE, PAID, Waybill, N/A
+  // Used on orders and remittance records
+  id integer [primary key, increment]
+  name varchar(100) [not null]
+  is_active boolean [default: true]
+}
+
+Table expense_categories {
+  // Full seed list derived from Director's existing P&L Excel sheet.
+  // System-reserved categories marked with note — cannot be manually selected.
+  //
+  // OPERATING EXPENSES:
+  //   Returns, Procurement, Advertising, Shipping, Logistics, Way Bill Expenses
+  //   Email Marketing, WhatsApp Marketing, Graphics, Bots, Recharge Card
+  //   Equipment, Media, Transport, WayBill, Services, Stationary
+  //   Facilities, Bank Charges, Subscriptions, Others
+  //
+  // PAYROLL-RELATED (auto-populated from payroll/bonus tables):
+  //   Salary, Bonuses
+  //
+  // EQUITY / NON-OPERATING:
+  //   Dividend (Director personal dividend from company profits — cash outflow)
+  //   Dispatch
+  //   Infrastructure Hosting
+  //
+  // SYSTEM-RESERVED (auto-populated only — not manually selectable by staff):
+  //   Financial Losses (auto-routed from remittance variance shortages)
+  //
+  id integer [primary key, increment]
+  name varchar(100) [not null, unique]
+  is_system_reserved boolean [default: false, note: 'If true, only automated processes can write to this category. Not shown in manual expense dropdown.']
+  is_active boolean [default: true]
+  created_at timestamp [default: `now()`]
+}
+
+// Refs — Section 2
+Ref: brands.department_id > departments.id
+Ref: brands.niche_id > niches.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 3 — PRODUCTS AND INVENTORY
+//
+// Products are department-locked through their brand.
+// No cross-department orders are possible.
+//
+// Stock has three states:
+//   Available   = waybill_stock - reserved - decremented
+//   Reserved    = order is Pending (physically with agent, not yet paid)
+//   Decremented = order is Cash Paid (permanently removed)
+//
+// If order status changes to Failed, Returned, Abandoned, or Cancelled,
+// Reserved stock is released back to Available automatically.
+//
+// Main Inventory and Order Bump Inventory are tracked separately.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table products {
+  id integer [primary key, increment]
+  name varchar(200) [not null]
+  department_id integer [not null]
+  brand_id integer [not null]
+  type varchar(50) [not null, note: 'Main, Order Bump, Upsell']
+  category varchar(100)
+  sku varchar(100) [unique]
+  price decimal(12,2) [not null]
+  status varchar(50) [not null, default: 'Active', note: 'Active, Inactive, Out of Stock']
+  description text
+  is_active boolean [default: true]
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+Table product_variants {
+  // Colours and variants per product
+  // e.g. Gaming Earbud comes in Black, White, Blue
+  id integer [primary key, increment]
+  product_id integer [not null]
+  colour varchar(100) [not null]
+  is_active boolean [default: true]
+  created_at timestamp [default: `now()`]
+}
+
+Table inventory {
+  // Main product stock tracking
+  // available is a calculated field: waybill_stock - reserved - decremented
+  //
+  // 📊 WEEKLY REPORT USAGE:
+  //   Section 4 — Inventory and Stock Movement: running balance (waybill_stock, reserved,
+  //               decremented, available) per product. Shows current stock position.
+  //
+  //   SECTION 4 FULL SOURCE MAP (for Claude Code — Module 7):
+  //     inventory table          → stock balance per product per variant
+  //     goods_movement table     → dispatches and returns within period
+  //     waybill_expenses table   → waybill movements within period
+  //     trashed_items table      → items written off within period
+  //     stock_adjustments table  → shrinkage and corrections within period
+  //   All five tables combine to show the complete physical stock narrative for the week.
+  id integer [primary key, increment]
+  product_id integer [not null]
+  variant_id integer
+  waybill_stock integer [not null, default: 0, note: 'Total stock received from supplier']
+  reserved integer [not null, default: 0, note: 'Soft allocated — order status is Pending']
+  decremented integer [not null, default: 0, note: 'Permanently removed — order status is Cash Paid']
+  available integer [not null, note: 'PostgreSQL GENERATED ALWAYS AS (waybill_stock - reserved - decremented) STORED — do not allow app to insert this value']
+  batch varchar(100) [note: 'Batch One, Batch Two etc']
+  updated_at timestamp [default: `now()`]
+  // ⚠ CONSTRAINT FOR CLAUDE CODE — MODULE 1:
+  // After creating this table run:
+  // ALTER TABLE inventory ADD CONSTRAINT check_available_not_negative CHECK (available >= 0);
+  // ALTER TABLE order_bump_inventory ADD CONSTRAINT check_bump_available_not_negative CHECK (available >= 0);
+  // Last-line-of-defence constraint. Application Director approval gate is primary control.
+  // Constraint catches failures in application logic before they corrupt stock data.
+}
+
+Table order_bump_inventory {
+  // Separate tracking for Order Bump stock
+  // Same logic as main inventory
+  id integer [primary key, increment]
+  product_id integer [not null]
+  variant_id integer
+  waybill_stock integer [not null, default: 0]
+  reserved integer [not null, default: 0]
+  decremented integer [not null, default: 0]
+  available integer [not null, note: 'PostgreSQL GENERATED ALWAYS AS (waybill_stock - reserved - decremented) STORED — do not allow app to insert this value']
+  batch varchar(100)
+  updated_at timestamp [default: `now()`]
+}
+
+// Refs — Section 3
+Ref: products.department_id > departments.id
+Ref: products.brand_id > brands.id
+Ref: product_variants.product_id > products.id
+Ref: inventory.product_id > products.id
+Ref: inventory.variant_id > product_variants.id
+Ref: order_bump_inventory.product_id > products.id
+Ref: order_bump_inventory.variant_id > product_variants.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 4 — USERS, ROLES, AND EMPLOYEE PROFILES
+//
+// users — lightweight system table for login and permissions
+// employee_profiles — full HR record per staff member
+//
+// Three name fields exist on users:
+//   full_name    = Ohambele Faith Chinonye (legal, used by HR and payroll)
+//   display_name = Ohambele (shown in CRM dropdowns and order records)
+//   username     = ohambele.faith (unique login ID, used in audit logs)
+//
+// Username is auto-generated from first name + last initial on account
+// creation. Director can override before saving. Never duplicates.
+//
+// No self-registration. Directors and HR Managers create all accounts.
+// Directors can disable any account instantly.
+// 2FA enabled for Directors, Ops Manager, and Accountant only.
+// CSRs do not have 2FA — login frequency is too high.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table roles {
+  // 9 roles — permissions enforced in application logic
+  // Director, Operations Manager, CSR, Accountant, HR,
+  // Auditor, Social Media Manager, Data Analyst, Warehouse Coordinator
+  id integer [primary key, increment]
+  name varchar(100) [not null, unique]
+  description text
+  can_edit_orders boolean [default: false]
+  can_delete_orders boolean [default: false]
+  can_view_finance boolean [default: false]
+  can_view_payroll boolean [default: false]
+  can_export_csv boolean [default: false]
+  can_manage_users boolean [default: false]
+  is_active boolean [default: true]
+}
+
+Table users {
+  // All Jamisan staff accounts — created by Directors only
+  id integer [primary key, increment]
+  role_id integer [not null]
+  username varchar(100) [not null, unique, note: 'Auto-generated: firstname.lastinitial e.g. ohambele.f']
+  display_name varchar(100) [not null, note: 'Short name shown in dropdowns e.g. Ohambele']
+  full_name varchar(200) [not null, note: 'Legal name e.g. Ohambele Faith Chinonye']
+  email varchar(200) [not null, unique, note: 'Company email e.g. ohambele.chinonye@jamisan.com']
+  phone varchar(20)
+  password_hash varchar(255) [not null]
+  is_active boolean [default: true, note: 'Director can disable instantly']
+  two_fa_enabled boolean [default: false]
+  two_fa_secret varchar(255)
+  trusted_device_expires_at timestamp [note: '30-day trusted device period for 2FA roles']
+  last_login_at timestamp
+  last_logout_at timestamp
+  csr_level integer [default: 1, note: 'Current CSR level 1-5. Only relevant for CSR role.']
+  is_on_break boolean [default: false, note: 'CSR-only. Clicking On Break toggle sets this to true instantly. Overrides last_active_at timer and sets status to Away (Yellow) immediately. Cleared on next CRM action.']
+  created_by integer [note: 'user_id of Director or HR Manager who created this account']
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+Table user_departments {
+  // Links CSRs to their assigned departments
+  // A CSR can be assigned to one or more departments
+  // Pabbly uses this to route incoming orders to the right CSR
+  id integer [primary key, increment]
+  user_id integer [not null]
+  department_id integer [not null]
+  created_at timestamp [default: `now()`]
+}
+
+Table employee_profiles {
+  // Full HR record — only accessible by HR and Directors
+  // Linked one-to-one with users table
+  id integer [primary key, increment]
+  user_id integer [not null, unique]
+  date_of_birth date
+  date_of_employment date
+  contact_address text
+  gender varchar(20)
+  marital_status varchar(50)
+  nationality varchar(100)
+  state_of_origin varchar(100)
+  lga_of_origin varchar(100)
+  languages_spoken varchar(200)
+  nin varchar(255) [note: 'ENCRYPTED AT REST — use pgcrypto or app-level encryption before storing']
+  drivers_license varchar(100)
+  tax_id varchar(100)
+  next_of_kin_name varchar(200)
+  next_of_kin_relationship varchar(100)
+  next_of_kin_phone varchar(20)
+  next_of_kin_address text
+  emergency_contact_name varchar(200)
+  emergency_contact_relationship varchar(100)
+  emergency_contact_phone_1 varchar(20)
+  emergency_contact_phone_2 varchar(20)
+  emergency_contact_address text
+  medical_conditions text [note: 'ENCRYPTED AT REST — sensitive health information']
+  main_bank_name varchar(100)
+  main_account_number varchar(255) [note: 'ENCRYPTED AT REST — financial PII']
+  main_account_type varchar(50) [note: 'Savings or Current']
+  alternate_bank_name varchar(100)
+  alternate_account_number varchar(255) [note: 'ENCRYPTED AT REST — financial PII']
+  alternate_account_type varchar(50)
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+Table session_log {
+  // Every login and logout recorded here
+  // Director sees who is currently active at any time
+  // If staff has not logged in by 9am Mon-Sat,
+  // alert fires to Director and Ops Manager
+  //
+  // CSR STATUS THRESHOLDS (driven by last_active_at):
+  //   🟢 Active   = last_active_at within last 20 minutes
+  //   🟡 Away     = last_active_at between 20-45 minutes ago
+  //   🔴 Offline  = last_active_at more than 45 minutes ago or logged out
+  //   🟡 On Break = users.is_on_break = true (overrides timer immediately)
+  id integer [primary key, increment]
+  user_id integer [not null]
+  logged_in_at timestamp [not null]
+  logged_out_at timestamp
+  session_duration_minutes integer [note: 'Calculated on logout']
+  last_active_at timestamp [note: 'Updated on every API request from the user. Delta between this and now() determines Green/Yellow/Red status on Ops Manager Live Floor.']
+  ip_address varchar(50)
+  device_info text
+}
+
+// Refs — Section 4
+Ref: users.role_id > roles.id
+Ref: users.created_by > users.id
+Ref: user_departments.user_id > users.id
+Ref: user_departments.department_id > departments.id
+Ref: employee_profiles.user_id > users.id
+Ref: session_log.user_id > users.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 5 — CUSTOMER INTELLIGENCE
+//
+// A separate customers table is maintained for fast lookups.
+// This avoids scanning 100k+ order rows on every page load.
+//
+// customer_tag drives row colour coding on the orders screen:
+//   new                = white  (first time, no history)
+//   ordered_not_bought = orange (ordered before but never paid)
+//   bought             = green  (has at least one Cash Paid order)
+//
+// is_banned overrides all colours — banned rows are always red.
+//
+// phone_number is the unique customer identifier across all orders.
+// When a new order arrives, CRM checks this table automatically.
+// If match found, return_customer flag on the order is set to true.
+//
+// wati_opted_out: set true when customer unsubscribes via WATI.
+// Reset to false automatically when customer places a new order.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table customers {
+  id integer [primary key, increment]
+  phone_number varchar(20) [not null, unique, note: 'Primary identifier. Format: +234XXXXXXXXXX']
+  other_phone varchar(20)
+  full_name varchar(200)
+  email varchar(200)
+  sex varchar(20) [note: 'Male, Female, Undefined']
+  first_order_date timestamp
+  last_order_date timestamp
+  total_orders integer [default: 0, note: 'All orders ever placed']
+  total_purchases integer [default: 0, note: 'Cash Paid orders only']
+  lifetime_value decimal(14,2) [default: 0, note: 'Total amount paid across all orders']
+  customer_tag varchar(50) [default: 'new', note: 'new, ordered_not_bought, bought']
+  is_banned boolean [default: false]
+  ban_reason text
+  banned_at timestamp
+  banned_by integer [note: 'user_id of Director or CSR who set the ban']
+  csr_notes text [note: 'Freeform notes at customer level — separate from order comments']
+  wati_opted_out boolean [default: false, note: 'Reset to false on new order']
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+// Refs — Section 5
+Ref: customers.banned_by > users.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 6 — AGENTS AND ZONE ASSIGNMENTS
+//
+// Agents are independent logistics companies that deliver orders across
+// Nigeria. Each agent operates their own warehouse — no central warehouse.
+//
+// V1: Agent dropdown on orders is filtered by state only.
+//     CSR manually selects which agent gets the order.
+//     All overrides are logged in the audit trail.
+//
+// ⚠ V1 ENFORCEMENT NOTE:
+// agent_zone_assignments is NOT used by any V1 application logic.
+// V1 filters agent dropdown by admin_level_1_id (state) on the agents table only.
+// CSR manually selects agent. Auto-assignment logic is V2 only.
+// Do not build any routing logic against this table in V1 modules.
+//
+// V2: Intelligent auto-assignment based on LGA-to-agent mapping.
+// Dispatch rules: direct_assign / round_robin / overflow_only
+// States currently mapped: Lagos (partial), Ogun (complete V2),
+//   Enugu (complete V1), FCT/Abuja (complete V1), Delta (partial)
+// Target: All 36 states + FCT — 774 LGAs total
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table agents {
+  id integer [primary key, increment]
+  name varchar(200) [not null, note: 'Company name e.g. Parcel Exchange, RGMARTZ']
+  contact_name varchar(200) [note: 'Individual contact at the agent company']
+  phone varchar(20)
+  email varchar(200)
+  address text
+  city varchar(100)
+  admin_level_1_id integer [note: 'Primary state of operation']
+  admin_level_2_id integer [note: 'Agent warehouse LGA']
+  bank_name varchar(100)
+  account_number varchar(50)
+  account_name varchar(200)
+  status varchar(50) [default: 'Active', note: 'Active, Inactive']
+  ratings decimal(3,1) [note: 'Performance score out of 5']
+  restrictions text [note: 'Any delivery restrictions for this agent']
+  source varchar(200) [note: 'How agent was recruited']
+  whatsapp_group_name varchar(200) [note: 'Name of the WhatsApp group for this agent e.g. Shanoma Logistics Jamisan']
+  whatsapp_group_link varchar(255) [note: 'WhatsApp group invite link for CSR copy-paste routing']
+  comments text
+  is_active boolean [default: true]
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+Table agent_zone_assignments {
+  // LGA to agent mapping table — V2 intelligent routing only
+  // V1 does NOT use this table for any application logic
+  id integer [primary key, increment]
+  admin_level_1_id integer [not null, note: 'State']
+  admin_level_2_id integer [note: 'LGA — null means entire state']
+  primary_agent_id integer [not null]
+  overflow_agent_id integer [note: 'Activated when primary agent unavailable']
+  dispatch_rule varchar(50) [not null, default: 'direct_assign', note: 'direct_assign, round_robin, overflow_only']
+  zone_belt varchar(100) [note: 'Western, Eastern, Northern, Metro etc']
+  notes text [note: 'Routing rationale and special instructions']
+  is_active boolean [default: true]
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+// Refs — Section 6
+Ref: agents.admin_level_1_id > admin_level_1.id
+Ref: agents.admin_level_2_id > admin_level_2.id
+Ref: agent_zone_assignments.admin_level_1_id > admin_level_1.id
+Ref: agent_zone_assignments.admin_level_2_id > admin_level_2.id
+Ref: agent_zone_assignments.primary_agent_id > agents.id
+Ref: agent_zone_assignments.overflow_agent_id > agents.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 7 — ORDERS
+//
+// The core table. Every order from every channel lands here.
+// One unified table replaces all split databases (First through Fifth)
+// from the Google Sheets CRM.
+//
+// ORDER ID PROTOCOL:
+// Every order gets a unique auto-generated Order ID on creation.
+// A separate order_id_counter table tracks the last issued ID.
+// Manual orders entered through CRM get auto-generated IDs — no manual input.
+// Historical orders without IDs will be backfilled before data migration.
+//
+// RETURN CUSTOMER DETECTION:
+// On order creation, CRM checks customers table by phone_number.
+// If match found, is_return_customer = true automatically.
+// No Pabbly input required for this field.
+//
+// STATUS LOGIC:
+// Pabbly sends 'Interested' as default on every new order.
+// CSR updates status from dropdown. Each update overrides the previous.
+// Previous status is NOT stored on this record — it lives in order_status_history.
+// When agent is assigned, status auto-changes to 'Pending'.
+//
+// STOCK LOGIC:
+// Pending    → Reserved stock increments
+// Cash Paid  → Decremented stock increments, Reserved decrements
+// Failed / Returned / Abandoned / Cancelled → Reserved stock released
+//
+// ⚠ TRIGGER ROLLBACK LOGIC — CRITICAL FOR CLAUDE CODE:
+// If OLD.status = 'Cash Paid' AND NEW.status != 'Cash Paid':
+//   → Reverse the agent_ledger Order_Delivered debit
+//   → Move stock from Decremented back to Reserved (not Available — order still active)
+//   → Log reversal in audit_log with reason
+// This prevents double-counting if CSR accidentally marks Cash Paid then corrects it.
+//
+// If OLD.status = 'Abandoned' AND NEW.status = 'Cash Paid':
+//   → Re-decrement stock (Abandoned had released Reserved back to Available)
+//   → Fire agent_ledger Order_Delivered debit as normal
+//   → Flag this order in audit_log as late_cash_paid = true
+//   → This pattern (Abandoned → Cash Paid) signals CSR neglect or late agent delivery
+//
+// LOGISTICS FEE TRIGGER LOGIC — CRITICAL FOR CLAUDE CODE:
+// When logistics_fee > 0 on an order:
+//   If NEW.status = 'Cash Paid':
+//     → Log agent_ledger entry as Logistics_Fee_Retained (CREDIT to agent)
+//   If NEW.status IN ('Failed', 'Returned'):
+//     → Log agent_ledger entry as Return_Fee_Retained (CREDIT to agent)
+//     → This distinguishes a successful delivery fee from a failed attempt fee
+//   If status is neither Cash Paid nor Failed/Returned, do NOT post ledger entry yet
+//
+// WATI LOGIC:
+// Cash Paid → wati_sequence_triggered set to true, export to Cash Paid sheet
+// Complaint/Refund logged → wati_suppressed set to true for that order
+// Cash Remitted does NOT trigger any WATI sequence
+//
+// CALCULATED FIELDS (not stored — computed in application):
+// dfo (Days From Order) = today - ordered_at
+// pd  (Payment Days)    = date_paid - ordered_at
+// day, week, month, year = derived from ordered_at
+//
+// ⚠ V1 ENFORCEMENT NOTE:
+// agent_zone_assignments is NOT used by any V1 logic.
+// Agent assignment is manual — CSR selects from state-filtered dropdown.
+//
+// 📊 WEEKLY REPORT USAGE:
+// PRIMARY source for the combined weekly report. Feeds:
+//   Section 1  — Team Performance Summary (conversion rate, orders, sales, sales gap)
+//   Section 2  — CSR Performance Table (per CSR: orders, sales, conversion rate, benchmark status)
+//   Section 3  — Individual CSR Breakdowns (per product: all status columns including
+//                CSR Skipped and Interested — flagged red if > 0 at end of period)
+//   Section 5  — Returns and Complaints Analysis (order context for returns)
+//   Section 6  — Agent Performance (orders, sales, pending, abandoned per agent)
+// Query filter: ordered_at >= period_start AND ordered_at <= period_end
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table orders {
+  id integer [primary key, increment]
+
+  // ── IDENTIFIERS ────────────────────────────────────────────────────────
+  order_id varchar(100) [unique, not null, note: 'Auto-generated e.g. CJAM1000. C=CRM, JAM=Jamisan, number increments from 1000']
+  row_number integer [note: 'Sequential display number — mirrors # column in Google Sheets']
+
+  // ── DATES AND TIMES ────────────────────────────────────────────────────
+  ordered_at timestamp [not null, note: 'Date and time order was placed']
+  order_time varchar(20) [note: 'Time string from Jamisan Form']
+  scheduled_date date [note: 'For customers who request a callback or later delivery']
+  date_paid date [note: 'Date customer payment was confirmed']
+  first_contact_at timestamp [note: 'Auto-stamped when CSR first updates status from Interested']
+
+  // ── SOURCE AND ASSIGNMENT ──────────────────────────────────────────────
+  source_id integer [note: 'Jamisan Form, WhatsApp Form, Social Media']
+  assigned_csr_id integer [not null, note: 'Set by Pabbly on order creation']
+  department_id integer [not null, note: 'Inherited from product via brand']
+  brand_id integer [note: 'Brand source of the order']
+  country_id integer [not null, default: 1, note: 'Defaults to Nigeria']
+
+  // ── CUSTOMER DETAILS ───────────────────────────────────────────────────
+  customer_id integer [note: 'Links to customers table via phone_number lookup']
+  customer_name varchar(200) [not null]
+  phone_number varchar(20) [not null, note: 'Auto-formatted to +234XXXXXXXXXX']
+  other_phone varchar(20) [note: 'Auto-formatted to +234XXXXXXXXXX']
+  email varchar(200)
+  sex varchar(20) [note: 'Male, Female, Undefined — set by CSR']
+  is_return_customer boolean [default: false, note: 'Auto-set by CRM on order creation']
+
+  // ── ADDRESS ────────────────────────────────────────────────────────────
+  admin_level_1_id integer [note: 'State — drives agent dropdown filter']
+  admin_level_2_id integer [note: 'LGA — cascades from state selection']
+  city varchar(200)
+  full_address text
+
+  // ── STATUS ─────────────────────────────────────────────────────────────
+  status varchar(100) [not null, default: 'Interested', note: 'One of 32 statuses. See spec Day 1 Section 4.']
+  comments text [note: 'CSR adds context when updating status']
+  failure_reason_id integer [note: 'Mandatory for Failed, Cancelled, Returned orders — cannot be blank']
+
+  // ── PRODUCT ────────────────────────────────────────────────────────────
+  product_id integer [not null]
+  product_variant_id integer [note: 'Colour selected']
+  quantity integer [not null, default: 1]
+  price decimal(12,2) [not null, note: 'Editable if customer haggles — reason logged in comments']
+  currency_code varchar(10) [default: 'NGN']
+
+  // ── ORDER BUMP ─────────────────────────────────────────────────────────
+  has_order_bump boolean [default: false]
+  order_bump_product_id integer [note: 'Order Bump product if applicable']
+  order_bump_variant_id integer [note: 'Order Bump colour']
+  order_bump_quantity integer [default: 0]
+  order_bump_price decimal(12,2) [default: 0, note: 'Editable price for order bump — may differ from product default price. Required for P&L and Copy Order clipboard.']
+  order_bump_type varchar(100) [note: 'Physical or Digital — determines stock deduction logic']
+
+  // ── AGENT AND LOGISTICS ────────────────────────────────────────────────
+  agent_id integer [note: 'Assigned by CSR from state-filtered dropdown']
+  logistics_fee decimal(12,2) [note: 'Delivery fee — logged by CSR after agent confirms']
+  shipping_type_id integer
+
+  // ── NICHE AND TRACKING ─────────────────────────────────────────────────
+  niche_id integer [note: 'Inherited from brand — for reporting']
+
+  // ── WATI TRACKING ──────────────────────────────────────────────────────
+  wati_sequence_triggered boolean [default: false, note: 'True when order exported to Cash Paid sheet']
+  wati_suppressed boolean [default: false, note: 'Set true when complaint or refund logged against this order']
+
+  // ── METADATA ───────────────────────────────────────────────────────────
+  api_batch_id varchar(100) [note: 'Pabbly webhook batch ID — traces Round-Robin assignment back to exact webhook payload for debugging. Shown in right panel Part B of slide-out panel.']
+  late_cash_paid boolean [default: false, note: 'Set true when order transitions Abandoned → Cash Paid. Signals CSR neglect or agent delivering outside 72hr SLA. Visible in Auditor Rapid Fail queue and Director dashboard.']
+  is_test boolean [default: false, note: 'Test orders filtered from all reports']
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+Table order_id_counter {
+  // Tracks the last issued Order ID to prevent duplicates
+  // One row only — updated on every new order creation
+  //
+  // ORDER ID FORMAT: CJAM + number
+  //   C   = CRM
+  //   JAM = Jamisan
+  //   Number starts at 1000 and increments by 1 per order
+  //   Examples: CJAM1000, CJAM1001, CJAM1002 ...
+  //
+  // ⚠ RACE CONDITION WARNING:
+  // Do NOT use this table's last_number directly in Node.js to generate IDs.
+  // Use a PostgreSQL SEQUENCE for the numeric part of order_id instead.
+  // PostgreSQL sequences are atomic — two simultaneous orders can never
+  // get the same number regardless of concurrent requests.
+  //
+  // INSTRUCTION FOR CLAUDE CODE — MODULE 1:
+  //   CREATE SEQUENCE cjam_order_seq START 1000 INCREMENT 1;
+  //   When generating order_id: 'CJAM' || nextval('cjam_order_seq')
+  //   Result: CJAM1000, CJAM1001, CJAM1002 ...
+  //
+  // DISPLAY BEHAVIOUR:
+  //   Order ID is generated and displayed when CSR opens a new order form.
+  //   It is committed to the database only when the form is saved.
+  //   If the form is abandoned without saving, that sequence number is skipped.
+  //   IDs do not need to be perfectly sequential — they must be unique.
+  id integer [primary key, increment]
+  prefix varchar(20) [not null, default: 'CJAM', note: 'C=CRM, JAM=Jamisan. Never changes.']
+  last_number integer [not null, default: 999, note: 'Seed value — sequence starts at 1000. Use PostgreSQL SEQUENCE not this field directly.']
+  updated_at timestamp [default: `now()`]
+}
+
+Table order_status_history {
+  // Dedicated indexed table for status change tracking
+  // Separate from audit_log for fast Power BI and alert pill queries
+  // Used to calculate: time in status, abandoned detection, CSR alert pills
+  //
+  // ⚠ This is NOT the general audit log — it tracks status changes only.
+  // General edits, deletions, and logins live in audit_log.
+  id integer [primary key, increment]
+  order_id integer [not null]
+  previous_status varchar(100)
+  new_status varchar(100) [not null]
+  changed_by integer [not null, note: 'user_id of CSR or system']
+  changed_at timestamp [default: `now()`]
+  notes text [note: 'Optional context for the status change']
+}
+
+Table audit_log {
+  // General system action log
+  // Captures: edits, deletions, logins, logouts, CSV exports
+  // Used by Directors and Auditors for compliance review
+  id integer [primary key, increment]
+  user_id integer [not null]
+  action varchar(100) [not null, note: 'e.g. edit_order, delete_order, login, export_csv']
+  table_name varchar(100) [note: 'Which table was affected']
+  record_id integer [note: 'Which record was affected']
+  old_value text [note: 'JSON snapshot of record before change']
+  new_value text [note: 'JSON snapshot of record after change']
+  ip_address varchar(50)
+  created_at timestamp [default: `now()`]
+}
+
+// Refs — Section 7
+Ref: orders.source_id > order_sources.id
+Ref: orders.assigned_csr_id > users.id
+Ref: orders.department_id > departments.id
+Ref: orders.brand_id > brands.id
+Ref: orders.country_id > countries.id
+Ref: orders.customer_id > customers.id
+Ref: orders.admin_level_1_id > admin_level_1.id
+Ref: orders.admin_level_2_id > admin_level_2.id
+Ref: orders.product_id > products.id
+Ref: orders.product_variant_id > product_variants.id
+Ref: orders.order_bump_product_id > products.id
+Ref: orders.order_bump_variant_id > product_variants.id
+Ref: orders.agent_id > agents.id
+Ref: orders.shipping_type_id > shipping_types.id
+Ref: orders.niche_id > niches.id
+Ref: orders.failure_reason_id > failure_reason_codes.id
+Ref: order_status_history.order_id > orders.id
+Ref: order_status_history.changed_by > users.id
+Ref: audit_log.user_id > users.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 8 — FINANCIAL FLOWS
+//
+// Finance tables mirror the Admin and Finance sections of Google Sheets CRM.
+//
+//   agent_remittance   — cash collected by agents and remitted back
+//   expenses           — general business expenses by category
+//   procurement_expenses — international procurement with FX tracking
+//   ad_expenses        — Facebook/TikTok ad spend per product per period
+//   investment_inflow  — capital injections from Directors
+//   loans              — loan tracking
+//   payroll            — monthly salary and commission records
+//   taxes              — tax payments and obligations
+//   goods_movement     — stock movement between warehouse and agents
+//
+// KEY FINANCIAL CALCULATED FIELDS (computed in application, not stored):
+//   Revenue        = SUM of price WHERE status = 'Cash Paid'
+//   Cost of Order  = total expenses / total orders
+//   Cost of Sale   = total expenses / total sales
+//   Profit         = Revenue - total expenses
+//   PD             = date_paid - ordered_at (on orders table)
+//   DFO            = today - ordered_at (on orders table)
+//
+// NOTE: Cash Remitted is retired as a revenue trigger.
+//       Cash Paid is the only status used for revenue calculations.
+//
+// 📊 WEEKLY REPORT USAGE — FINANCIAL TABLES:
+//   Section 7 — Financial Summary:
+//     Revenue     = SUM(orders.price) WHERE status = 'Cash Paid' AND period
+//     Expenses    = SUM(expenses + procurement_expenses + ad_expenses + waybill_expenses)
+//     Profit/Loss = Revenue - Expenses
+//     Net Profit Margin % = (Profit / Revenue) * 100
+//   Section 8 — Remittance Report:
+//     Amount to be remitted = SUM(orders.price) WHERE Cash Paid AND agent not yet settled
+//     Amount remitted       = SUM(agent_remittance.final_amount_remitted) for period
+//     Outstanding balance   = agent_ledger running balance per agent
+//     Cash flow table       = Accountant manually enters bank inflows/outflows (V1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table agent_remittance {
+  // Cash collected by agent on delivery and remitted back to Jamisan
+  //
+  // TWO-STEP VERIFICATION WORKFLOW:
+  //   Step 1 — Ops Manager: Extracts cash from agent, clicks Clear Debt
+  //            → Creates row with status = Pending_Bank_Verification
+  //            → Removes red alert from Ops Manager dashboard
+  //   Step 2 — Accountant: Matches against actual bank statement
+  //            → Clicks Verified and Cleared → status = Verified_Cleared
+  //
+  // Rationale: Person managing agents cannot be same person
+  // balancing the company bank account. Ops logs, Accountant verifies.
+  //
+  // 📊 WEEKLY REPORT USAGE:
+  //   Section 8 — Remittance Report: amount remitted for the period per agent.
+  //   Also triggers agent_ledger entry (Cash_Remitted credit) on UPDATE when status = Verified_Cleared.
+  id integer [primary key, increment]
+  agent_id integer [not null]
+  admin_level_1_id integer [note: 'State the remittance covers']
+  amount_remitted decimal(14,2) [not null, note: 'Raw cash received from agent']
+  logistics_fee_paid decimal(14,2) [default: 0, note: 'Logistics fee deducted from remittance']
+  final_amount_remitted decimal(14,2) [not null, note: 'amount_remitted - logistics_fee_paid']
+  remittance_date date [not null]
+  currency_code varchar(10) [default: 'NGN', note: 'NGN for Nigeria, GHS for Ghana etc']
+  status varchar(50) [not null, default: 'Pending_Bank_Verification', note: 'Pending_Bank_Verification, Verified_Cleared, Disputed']
+  logged_by integer [not null, note: 'Ops Manager user_id who logged the remittance']
+  verified_by integer [note: 'Accountant user_id who verified against bank statement']
+  verified_at timestamp [note: 'When Accountant clicked Verified and Cleared']
+  bank_reference varchar(200) [note: 'Bank transfer reference number — added by Accountant on verification']
+  actual_amount_received decimal(14,2) [note: 'Actual amount seen in bank statement — may differ from amount_remitted']
+  variance_amount decimal(14,2) [note: 'actual_amount_received - final_amount_remitted. Negative = shortage, positive = overpayment']
+  variance_reason_id integer [note: 'Reason for variance — from remittance_variance_reason_codes table']
+  dispute_notes text [note: 'Populated when Accountant flags a discrepancy']
+  month varchar(20)
+  year integer
+  comments text
+  created_at timestamp [default: `now()`]
+}
+
+Table expenses {
+  // General business expenses
+  // For procurement use procurement_expenses table
+  // For ad spend use ad_expenses table
+  id integer [primary key, increment]
+  expense_category_id integer [not null]
+  description text
+  amount decimal(14,2) [not null]
+  expense_date date [not null]
+  currency_code varchar(10) [default: 'NGN']
+  month varchar(20)
+  year integer
+  product_id integer [note: 'If expense is tied to a specific product']
+  agent_id integer [note: 'If expense is tied to a specific agent']
+  admin_level_1_id integer [note: 'If expense is tied to a specific state']
+  batch varchar(100) [note: 'If expense is tied to a procurement batch']
+  comments text
+  receipt_url varchar(500) [note: 'Google Drive shareable link to receipt — Accountant uploads to Drive, pastes link here']
+  logged_by integer [not null]
+  created_at timestamp [default: `now()`]
+}
+
+Table procurement_expenses {
+  // International procurement — primarily Alibaba
+  // Stores both USD and Naira for accurate FX tracking
+  id integer [primary key, increment]
+  description text [not null]
+  vendor_id integer [note: 'Links to vendors table — Vendor dropdown in Accountant procurement form. Chain link icon opens vendor profile.']
+  product_id integer
+  batch varchar(100)
+  unit_quantity integer [not null, note: 'Number of units purchased']
+  unit_price_usd decimal(10,4) [not null, note: 'Cost per unit in USD']
+  shipping_usd decimal(10,2) [default: 0, note: 'Shipping cost in USD']
+  processing_fee_usd decimal(10,2) [default: 0]
+  alibaba_cut decimal(10,4) [default: 0, note: 'Alibaba commission percentage']
+  total_usd decimal(10,2) [not null, note: 'Total cost in USD before conversion']
+  exchange_rate decimal(10,2) [not null, note: 'USD to NGN rate at time of purchase']
+  total_ngn decimal(14,2) [not null, note: 'total_usd * exchange_rate']
+  procurement_date date [not null]
+  month varchar(20)
+  year integer
+  niche_id integer
+  comments text
+  receipt_url varchar(500) [note: 'Google Drive shareable link to invoice or receipt']
+  logged_by integer [not null]
+  created_at timestamp [default: `now()`]
+}
+
+Table ad_expenses {
+  // Facebook and TikTok advertising spend
+  // Tracked per product per brand per time period
+  id integer [primary key, increment]
+  product_id integer
+  brand_id integer
+  campaign_name varchar(200) [note: 'e.g. Stretchmarks Gel ABO, Speaker CBO']
+  time_period varchar(100) [note: 'e.g. January, Q1 2025, Week 3']
+  amount decimal(14,2) [not null]
+  platform varchar(50) [note: 'Facebook, TikTok, Google etc']
+  payment_method varchar(100) [note: 'Company Card, Bank Transfer, Petty Cash']
+  expense_date date [not null]
+  month varchar(20)
+  year integer
+  comments text
+  receipt_url varchar(500) [note: 'Google Drive link to screenshot from Ads Manager']
+  logged_by integer [not null]
+  created_at timestamp [default: `now()`]
+}
+
+Table investment_inflow {
+  // Capital injections from Directors
+  // Tracked separately from revenue for accurate profit calculation
+  id integer [primary key, increment]
+  amount decimal(14,2) [not null]
+  inflow_date date [not null]
+  currency_code varchar(10) [default: 'NGN']
+  month varchar(20)
+  year integer
+  comments text [note: 'e.g. Investment Inflow from Director']
+  logged_by integer [not null, note: 'Director user_id']
+  created_at timestamp [default: `now()`]
+}
+
+Table loans {
+  // Loan tracking — amounts borrowed and repayment status
+  id integer [primary key, increment]
+  amount decimal(14,2) [not null]
+  loan_date date [not null]
+  currency_code varchar(10) [default: 'NGN']
+  lender varchar(200)
+  repayment_status varchar(50) [default: 'Outstanding', note: 'Outstanding, Partially Paid, Fully Paid']
+  amount_repaid decimal(14,2) [default: 0]
+  due_date date
+  month varchar(20)
+  year integer
+  comments text
+  logged_by integer [not null]
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+Table payroll {
+  // Monthly salary records per staff member
+  // Accessible by Accountant, HR, Ops Manager, and Directors only
+  // commission_amount is calculated from csr_performance_monthly
+  //
+  // APPROVAL FLOW:
+  //   1. HR prepares payroll — status = Pending_Director_Approval
+  //   2. Director reviews and approves — status = Approved, director_approved_by populated
+  //   3. Accountant pays externally via bank transfer
+  //   4. Accountant logs payment — status = Paid, payment_date and bank_reference populated
+  id integer [primary key, increment]
+  user_id integer [not null]
+  amount decimal(14,2) [not null, note: 'Base salary']
+  commission_amount decimal(12,2) [default: 0, note: 'Calculated from csr_performance_monthly']
+  total_compensation decimal(12,2) [note: 'amount + commission_amount']
+  payment_date date
+  currency_code varchar(10) [default: 'NGN']
+  month varchar(20)
+  year integer
+  payment_method varchar(100)
+  bank_name varchar(100)
+  account_number varchar(50)
+  bank_reference varchar(200) [note: 'Bank transfer reference number logged by Accountant after external payment']
+  status varchar(50) [default: 'Pending_Director_Approval', note: 'Pending_Director_Approval, Approved, Paid, On_Hold']
+  director_approved_by integer [note: 'Director user_id who approved the payroll batch']
+  director_approved_at timestamp [note: 'When Director clicked Approve Batch']
+  comments text
+  logged_by integer [not null, note: 'HR user_id who prepared the payroll']
+  created_at timestamp [default: `now()`]
+}
+
+Table taxes {
+  // Tax payments and obligations
+  id integer [primary key, increment]
+  tax_type varchar(100) [not null, note: 'VAT, Corporate Tax, PAYE etc']
+  amount decimal(14,2) [not null]
+  tax_date date [not null]
+  currency_code varchar(10) [default: 'NGN']
+  month varchar(20)
+  year integer
+  comments text
+  receipt_url varchar(500) [note: 'Google Drive link to tax payment receipt or assessment document']
+  logged_by integer [not null]
+  created_at timestamp [default: `now()`]
+}
+
+Table goods_movement {
+  // Tracks stock movement between warehouse and agents
+  // from_agent_id null = goods coming from Jamisan warehouse
+  // to_agent_id null = goods returning to Jamisan warehouse
+  //
+  // 📊 WEEKLY REPORT USAGE:
+  //   Section 4 — Inventory and Stock Movement: goods movement within the period.
+  //   If no records exist for the period: auto-displays "No movement this period."
+  id integer [primary key, increment]
+  product_id integer [not null]
+  variant_id integer
+  quantity integer [not null]
+  movement_type varchar(50) [not null, note: 'Sent, Returned, Waybill']
+  from_agent_id integer [note: 'Null means Jamisan warehouse is the source']
+  to_agent_id integer [note: 'Null means returning to Jamisan warehouse']
+  admin_level_1_id integer [note: 'State goods moved to or from']
+  shipping_type_id integer
+  movement_date date [not null]
+  batch varchar(100)
+  month varchar(20)
+  year integer
+  comments text
+  logged_by integer [not null]
+  created_at timestamp [default: `now()`]
+}
+
+// Refs — Section 8
+Ref: agent_remittance.agent_id > agents.id
+Ref: agent_remittance.admin_level_1_id > admin_level_1.id
+Ref: agent_remittance.logged_by > users.id
+Ref: expenses.expense_category_id > expense_categories.id
+Ref: expenses.product_id > products.id
+Ref: expenses.agent_id > agents.id
+Ref: expenses.admin_level_1_id > admin_level_1.id
+Ref: expenses.logged_by > users.id
+Ref: procurement_expenses.vendor_id > vendors.id
+Ref: procurement_expenses.product_id > products.id
+Ref: procurement_expenses.niche_id > niches.id
+Ref: procurement_expenses.logged_by > users.id
+Ref: ad_expenses.product_id > products.id
+Ref: ad_expenses.brand_id > brands.id
+Ref: ad_expenses.logged_by > users.id
+Ref: investment_inflow.logged_by > users.id
+Ref: loans.logged_by > users.id
+Ref: payroll.user_id > users.id
+Ref: payroll.logged_by > users.id
+Ref: payroll.director_approved_by > users.id
+Ref: taxes.logged_by > users.id
+Ref: goods_movement.product_id > products.id
+Ref: goods_movement.variant_id > product_variants.id
+Ref: goods_movement.from_agent_id > agents.id
+Ref: goods_movement.to_agent_id > agents.id
+Ref: goods_movement.admin_level_1_id > admin_level_1.id
+Ref: goods_movement.shipping_type_id > shipping_types.id
+Ref: goods_movement.logged_by > users.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 9 — COMPLAINTS AND TRASHED ITEMS
+//
+// COMPLAINTS:
+// Attached to the order record for full context.
+// Also visible in standalone complaints dashboard.
+// Logged by CSR when customer calls or messages via WhatsApp.
+// Resolution: call or WhatsApp — worst case a refund.
+// Setting wati_suppressed = true on the order prevents sequence trigger.
+// Complaints do NOT affect agent ratings.
+// Abandoned orders DO affect agent ratings.
+//
+// TRASHED ITEMS:
+// Logged by Warehouse Coordinator when failed delivery returns from agent.
+// Good condition → redistributed by agent (not logged here)
+// Bad condition  → agent returns physical item → logged as Trashed
+//
+// 📊 WEEKLY REPORT USAGE:
+//   Section 3  — Individual CSR Breakdowns: customer complaints pulled per CSR per period
+//   Section 5  — Returns and Complaints Analysis: complaints grouped by product and
+//                reason_category. Count, percentage, key customer complaint text.
+//                trashed_items feeds the returns count and physical damage reasons.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table complaints {
+  // Attached to order for full context
+  // Also visible in standalone complaints dashboard
+  id integer [primary key, increment]
+  order_id integer [not null]
+  customer_id integer [not null]
+  assigned_csr_id integer [note: 'CSR who logged the complaint']
+  complaint_type varchar(100) [note: 'Wrong Product, Late Delivery, Damaged Item, Other']
+  description text [not null]
+  resolution text [note: 'How it was resolved']
+  refund_amount decimal(12,2) [default: 0, note: 'Amount refunded if applicable']
+  date_of_complaint date
+  replaced_or_refunded boolean [default: false]
+  cost_of_return decimal(12,2) [default: 0]
+  total_cost decimal(12,2) [note: 'cost_of_return + refund_amount']
+  date_of_return date
+  status varchar(50) [default: 'Open', note: 'Open, Resolved, Escalated']
+  logged_at timestamp [default: `now()`]
+  resolved_at timestamp
+  resolved_by integer [note: 'user_id of CSR or Director who resolved']
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+Table trashed_items {
+  // Logged by Warehouse Coordinator when returned stock is confirmed damaged
+  // Good condition returns are redistributed by agent — not logged here
+  //
+  // ⚠ APPLICATION LOGIC REQUIRED:
+  // When a record is inserted into trashed_items, the application must
+  // subtract that quantity from waybill_stock in the inventory table.
+  // This prevents ghost stock — items that are trashed but still show
+  // as Available because waybill_stock was never reduced.
+  // Recommended: implement as a PostgreSQL trigger on trashed_items INSERT.
+  id integer [primary key, increment]
+  product_id integer [not null]
+  variant_id integer
+  quantity integer [not null]
+  agent_id integer [not null, note: 'Agent who returned the item']
+  admin_level_1_id integer [note: 'State the item was returned from']
+  status varchar(50) [not null, default: 'Trashed', note: 'Trashed, Redistributed']
+  month varchar(20)
+  year integer
+  comments text
+  logged_by integer [not null, note: 'Warehouse Coordinator user_id']
+  logged_at date [not null]
+  created_at timestamp [default: `now()`]
+}
+
+// Refs — Section 9
+Ref: complaints.order_id > orders.id
+Ref: complaints.customer_id > customers.id
+Ref: complaints.assigned_csr_id > users.id
+Ref: complaints.resolved_by > users.id
+Ref: trashed_items.product_id > products.id
+Ref: trashed_items.variant_id > product_variants.id
+Ref: trashed_items.agent_id > agents.id
+Ref: trashed_items.admin_level_1_id > admin_level_1.id
+Ref: trashed_items.logged_by > users.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 10 — NOTIFICATIONS AND ALERTS
+//
+// INTERNAL ALERTS (CSR dashboard pills):
+//   - Orders missing logistics fees
+//   - Cash Paid orders with no date_paid logged
+//   - Orders on Pending for more than 24 hours
+//   - Orders on Interested for more than 48 hours
+//
+// EXTERNAL NOTIFICATIONS:
+//   - Daily hygiene email to CSR at 8am — Ops Manager and Director CC'd
+//   - Login alert at 9am Mon-Sat if CSR has not logged in
+//   - Agent daily summary at 5am WAT — email + WATI simultaneously
+//     Skip agent if zero pending/abandoned orders
+//   - Abandoned order instant notification to agent when order auto-abandons
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table notifications {
+  // Log of every notification sent by the system
+  id integer [primary key, increment]
+  notification_type varchar(100) [not null, note: 'csr_alert, login_alert, agent_summary, daily_hygiene, abandoned_instant']
+  channel varchar(50) [not null, note: 'email, whatsapp, internal']
+  recipient_type varchar(50) [not null, note: 'user, agent']
+  recipient_user_id integer [note: 'If sent to a staff member']
+  recipient_agent_id integer [note: 'If sent to an agent']
+  subject varchar(200)
+  message text
+  status varchar(50) [default: 'Sent', note: 'Sent, Failed, Pending']
+  sent_at timestamp [default: `now()`]
+  error_message text [note: 'If status is Failed, reason stored here']
+}
+
+// Refs — Section 10
+Ref: notifications.recipient_user_id > users.id
+Ref: notifications.recipient_agent_id > agents.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 11 — WAYBILL EXPENSES
+//
+// Tracks inter-state shipping costs.
+// Separate from regular logistics fees paid to agents.
+// Waybill = goods shipped between states via third party courier.
+//
+// Types: Sending (Jamisan → agent) / Receiving (agent → Jamisan)
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table waybill_expenses {
+  id integer [primary key, increment]
+  waybill_type varchar(50) [not null, note: 'Sending, Receiving']
+  // 📊 WEEKLY REPORT USAGE:
+  //   Section 4 — Inventory and Stock Movement: waybill movements for the period.
+  //   Section 7 — Financial Summary: waybill costs feed total expenses calculation.
+  //   Also triggers agent_ledger entry (Waybill_Paid_By_Agent credit) if agent paid.
+  product_id integer
+  variant_id integer
+  quantity integer
+  batch varchar(100)
+  colour varchar(100)
+  waybill_status varchar(50) [note: 'Warehouse, Signed Receipt, In Transit']
+  product_type varchar(20) [note: 'Main or Order Bump']
+  from_admin_level_1_id integer [note: 'State goods shipped from']
+  to_admin_level_1_id integer [note: 'State goods shipped to']
+  agent_id integer [note: 'Agent involved in the waybill']
+  amount decimal(14,2) [not null, note: 'Cost of the waybill']
+  currency_code varchar(10) [default: 'NGN']
+  courier varchar(100) [note: 'Courier company used']
+  waybill_date date [not null]
+  payment_method varchar(100) [note: 'Company paid, Agent to Pay and Deduct, Petty Cash']
+  month varchar(20)
+  year integer
+  comments text
+  receipt_url varchar(500) [note: 'Google Drive link to waybill receipt or transport invoice']
+  logged_by integer [not null]
+  created_at timestamp [default: `now()`]
+}
+
+// Refs — Section 11
+Ref: waybill_expenses.product_id > products.id
+Ref: waybill_expenses.variant_id > product_variants.id
+Ref: waybill_expenses.from_admin_level_1_id > admin_level_1.id
+Ref: waybill_expenses.to_admin_level_1_id > admin_level_1.id
+Ref: waybill_expenses.agent_id > agents.id
+Ref: waybill_expenses.logged_by > users.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 12 — ACTION ITEMS
+//
+// Tracks open and closed action items across the business.
+// Accessible by all staff.
+// Directors and Ops Manager can assign to any user.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table action_items {
+  id integer [primary key, increment]
+  title varchar(200) [not null]
+  description text
+  assigned_to integer [note: 'user_id of staff member responsible']
+  assigned_by integer [note: 'user_id of Director or Ops Manager who created it']
+  status varchar(50) [default: 'Open', note: 'Open, In Progress, Closed']
+  priority varchar(50) [default: 'Medium', note: 'Low, Medium, High, Critical']
+  due_date date
+  closed_at timestamp
+  closed_by integer
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+// Refs — Section 12
+Ref: action_items.assigned_to > users.id
+Ref: action_items.assigned_by > users.id
+Ref: action_items.closed_by > users.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 13 — CSR PERFORMANCE AND COMMISSION SYSTEM
+//
+// 5-level CSR system. Level determines base salary only.
+// Commission is tiered based on monthly payment rate (units basis).
+// Payment rate = paid units delivered ÷ total units ordered.
+//
+// Commission is retroactive — crossing a tier threshold recalculates
+// ALL units sold that month at the new rate (backdating principle).
+//
+// Thresholds differ by department:
+//   Beauty/Skincare — higher thresholds
+//   Gadgets         — 5 percentage points lower (higher price point)
+//
+// Level promotion: 3 consecutive months above threshold
+// Level demotion:  2 consecutive months below threshold
+// Nigerian grace provisions apply to demotion assessments.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table csr_levels {
+  // Reference table — 5 CSR levels and their base salaries
+  id integer [primary key, increment]
+  level_number integer [not null, note: '1 through 5']
+  level_name varchar(50) [not null, note: 'Level 1, Level 2 etc']
+  base_salary decimal(12,2) [not null, note: 'L1=100k L2=150k L3=180k L4=220k L5=270k']
+  description text
+  is_active boolean [default: true]
+}
+
+Table commission_tiers {
+  // Tiered commission rates per department
+  // Applied retroactively to all units sold that month when tier is crossed
+  id integer [primary key, increment]
+  department_id integer [not null]
+  payment_rate_min decimal(5,2) [not null, note: 'Lower bound e.g. 40.00']
+  payment_rate_max decimal(5,2) [note: 'Upper bound — null means no ceiling']
+  commission_per_unit decimal(10,2) [not null, note: 'Naira per paid unit']
+  is_active boolean [default: true]
+  notes text [note: 'e.g. Transition period for gadgets']
+}
+
+Table csr_promotion_thresholds {
+  // Promotion and demotion thresholds per level per department
+  id integer [primary key, increment]
+  department_id integer [not null]
+  from_level integer [not null, note: 'Current level']
+  to_level integer [not null, note: 'Target level']
+  direction varchar(10) [not null, note: 'promotion or demotion']
+  payment_rate_threshold decimal(5,2) [not null]
+  consecutive_months_required integer [not null, note: '3 for promotion, 2 for demotion']
+  is_active boolean [default: true]
+}
+
+Table csr_level_history {
+  // Every level change per CSR — audit trail and historical reporting
+  id integer [primary key, increment]
+  user_id integer [not null]
+  previous_level integer
+  new_level integer [not null]
+  changed_at timestamp [default: `now()`]
+  changed_by integer [note: 'Director or Ops Manager user_id for manual changes. NULL for automated promotions triggered by csr_promotion_thresholds.']
+  reason text [note: 'Grace provision applied, sustained performance etc']
+}
+
+Table csr_performance_monthly {
+  // Monthly snapshot per CSR — source of truth for commission calculation
+  // Rolling 7-day rate is calculated live from orders — not stored here
+  //
+  // 📊 WEEKLY REPORT USAGE:
+  //   Section 2 — CSR Performance Table: payment_rate feeds benchmark status column.
+  //   Section 7 — Financial Summary: commission_amount feeds payroll expense calculation.
+  //   Note: The weekly report queries orders directly for the period conversion rate.
+  //         csr_performance_monthly is used for the monthly commission and payroll view.
+  id integer [primary key, increment]
+  user_id integer [not null]
+  department_id integer [not null]
+  month varchar(20) [not null]
+  year integer [not null]
+  total_orders integer [default: 0]
+  total_units_ordered integer [default: 0]
+  total_units_paid integer [default: 0, note: 'Cash Paid orders only']
+  payment_rate decimal(5,2) [default: 0, note: 'total_units_paid / total_units_ordered * 100']
+  commission_tier_id integer [note: 'Which tier applied this month']
+  commission_per_unit decimal(10,2) [default: 0]
+  total_commission decimal(12,2) [default: 0]
+  base_salary decimal(12,2) [default: 0]
+  total_compensation decimal(12,2) [default: 0, note: 'base_salary + total_commission']
+  csr_level_at_time integer [note: 'Level CSR was at during this month']
+  is_finalised boolean [default: false, note: 'Locked once payroll is processed']
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+Table weekly_bonus_log {
+  // Weekly bonus — only paid if CSR crossed 40% payment rate that week
+  // Announced publicly before payment
+  id integer [primary key, increment]
+  user_id integer [not null]
+  week_start_date date [not null]
+  week_end_date date [not null]
+  payment_rate_achieved decimal(5,2) [not null]
+  bonus_amount decimal(10,2) [not null, default: 10000]
+  qualified boolean [not null, note: 'False if nobody crossed 40% that week']
+  announced_at timestamp
+  paid_at timestamp
+  paid_by integer [note: 'Ops Manager user_id']
+  notes text
+  created_at timestamp [default: `now()`]
+}
+
+// Refs — Section 13
+Ref: commission_tiers.department_id > departments.id
+Ref: csr_promotion_thresholds.department_id > departments.id
+Ref: csr_level_history.user_id > users.id
+Ref: csr_level_history.changed_by > users.id
+Ref: csr_performance_monthly.user_id > users.id
+Ref: csr_performance_monthly.department_id > departments.id
+Ref: csr_performance_monthly.commission_tier_id > commission_tiers.id
+Ref: weekly_bonus_log.user_id > users.id
+Ref: weekly_bonus_log.paid_by > users.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 14 — FRAUD PREVENTION AND SYSTEM INTEGRITY
+//
+// failure_reason_codes: Mandatory on Failed/Cancelled/Returned orders.
+//   CSR cannot leave blank — enforced at application level.
+//
+// pabbly_reconciliation_log: Daily CRM vs Pabbly order count comparison.
+//   Discrepancy triggers alert to Ops Manager and Director.
+//
+// backup_log: Tracks every pg_dump backup — local VPS and offsite Drive.
+//   Director sees backup status in CRM admin panel.
+//   Failed backup triggers email alert to Director.
+//
+// 📊 WEEKLY REPORT USAGE:
+//   Section 3 — Individual CSR Breakdowns: failure_reason_codes grouped per CSR
+//               for the period. Shows why orders failed — feeds the "Failed Delivery
+//               reasons" section that was previously typed manually by the CSR.
+//   Section 5 — Returns and Complaints Analysis: failure_reason_codes grouped by
+//               product and reason category with count and percentage.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table failure_reason_codes {
+  // Mandatory when order status = Failed, Cancelled, or Returned
+  id integer [primary key, increment]
+  code varchar(50) [not null, unique]
+  description varchar(200) [not null, note: 'e.g. Customer Refused, Wrong Address, Unreachable']
+  applies_to_status varchar(100) [note: 'Failed, Cancelled, Returned etc']
+  is_active boolean [default: true]
+}
+
+Table pabbly_reconciliation_log {
+  // Daily auto-reconciliation — CRM order count vs Pabbly webhook log
+  id integer [primary key, increment]
+  reconciliation_date date [not null]
+  crm_order_count integer [not null]
+  pabbly_order_count integer [not null]
+  discrepancy integer [not null, note: 'crm_order_count - pabbly_order_count']
+  status varchar(50) [not null, note: 'Matched, Discrepancy Found']
+  alert_sent boolean [default: false]
+  reviewed_by integer [note: 'Ops Manager or Director who reviewed']
+  reviewed_at timestamp
+  notes text
+  created_at timestamp [default: `now()`]
+}
+
+Table backup_log {
+  // Every database backup — local VPS and offsite Google Drive
+  id integer [primary key, increment]
+  backup_type varchar(50) [not null, note: 'local, offsite']
+  file_name varchar(200)
+  file_size_mb decimal(8,2)
+  status varchar(50) [not null, note: 'Success, Failed, In Progress']
+  started_at timestamp [not null]
+  completed_at timestamp
+  error_message text
+  created_at timestamp [default: `now()`]
+}
+
+// Refs — Section 14
+Ref: pabbly_reconciliation_log.reviewed_by > users.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 15 — WATI INTEGRATION TRACKING
+//
+// V1: WATI triggered via two Google Sheets that Pabbly reads once daily
+//   Sheet 1: Cash Paid Orders — triggers post-purchase sequence
+//   Sheet 2: Complaints/Refunds — suppresses sequence for affected orders
+//
+// V2: Direct WATI API — fires immediately on Cash Paid status change
+//
+// Sequences are department-aware:
+//   Beauty → Beauty post-purchase sequence
+//   Gadgets → Gadgets post-purchase sequence
+//
+// Pre-purchase sequence fires for ALL customers on form submit via Pabbly.
+// Cash Paid moves customer from pre-purchase to post-purchase sequence.
+// Cash Remitted does NOT trigger any WATI sequence.
+// Banned customers remain in sequences — no suppression.
+// Unsubscribed customers (wati_opted_out) are excluded until new order.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table wati_export_log {
+  // Tracks every export to Cash Paid Orders and Complaints/Refunds sheets
+  // Pabbly reads these sheets once daily
+  id integer [primary key, increment]
+  export_type varchar(50) [not null, note: 'cash_paid_orders, complaints_refunds']
+  export_date date [not null]
+  records_exported integer [not null]
+  status varchar(50) [not null, note: 'Success, Failed']
+  error_message text
+  created_at timestamp [default: `now()`]
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 16 — STOCK ADJUSTMENTS
+//
+// Handles inventory shrinkage, surplus, and corrections.
+// This is the "pressure valve" that aligns digital stock with physical reality.
+//
+// Adjustment types:
+//   Shrinkage/Missing      = items lost, stolen, or unaccounted for
+//   Damaged_In_Warehouse   = items damaged before dispatch
+//   Marketing_Sample       = items taken as samples by Directors
+//   Found/Surplus          = stocktake found more than system shows
+//   Initial_Count_Correction = historical balancing entries (migration)
+//
+// TRIGGER LOGIC:
+//   AFTER INSERT on stock_adjustments:
+//   UPDATE inventory SET waybill_stock = waybill_stock + NEW.quantity_adjusted
+//   WHERE product_id = NEW.product_id AND variant_id = NEW.variant_id
+//
+// CONSTRAINT:
+//   If adjustment causes available stock to drop below zero:
+//   - Warn the user and require Director approval before proceeding
+//   - approved_by field must be populated before trigger fires
+//
+// MIGRATION NOTE:
+//   All negative quantity rows in the waybill tab import here
+//   with adjustment_type = 'Initial_Count_Correction'.
+//   Original comments are preserved. Individual records maintained
+//   for full historical audit trail.
+//
+// PERMISSIONS:
+//   Warehouse Coordinator, Ops Manager, Directors can log adjustments.
+//   Only Directors can approve adjustments that push available below zero.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table stock_adjustments {
+  id integer [primary key, increment]
+  product_id integer [not null]
+  variant_id integer
+  quantity_adjusted integer [not null, note: 'Positive = surplus found. Negative = shrinkage/loss.']
+  adjustment_type varchar(100) [not null, note: 'Shrinkage/Missing, Damaged_In_Warehouse, Marketing_Sample, Found/Surplus, Initial_Count_Correction']
+  comments text [not null, note: 'Mandatory — must explain reason for adjustment']
+  logged_by integer [not null, note: 'Warehouse Coordinator, Ops Manager, or Director']
+  approved_by integer [note: 'Director approval required if adjustment pushes available below zero']
+  approved_at timestamp
+  created_at timestamp [default: `now()`]
+}
+
+// Refs — Section 16
+Ref: stock_adjustments.product_id > products.id
+Ref: stock_adjustments.variant_id > product_variants.id
+Ref: stock_adjustments.logged_by > users.id
+Ref: stock_adjustments.approved_by > users.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 17 — AGENT LEDGER
+//
+// Real-time chronological bank statement per agent.
+// Every operational action in the CRM automatically posts an entry.
+// No manual data entry required — the ledger is driven by system triggers.
+//
+// TRANSACTION TYPES:
+//   Order_Delivered        = CSR sets order to Cash Paid → DEBIT orders.price
+//   Logistics_Fee_Retained = CSR logs logistics_fee → CREDIT logistics_fee
+//   Waybill_Paid_By_Agent  = Accountant logs waybill (agent paid) → CREDIT amount
+//   Return_Fee_Retained    = Agent retains fee for a return → CREDIT amount
+//   Cash_Remitted          = AFTER UPDATE on agent_remittance WHERE NEW.status = 'Verified_Cleared'
+//                            → CREDIT final_amount_remitted (not on INSERT — must be bank-verified first)
+//                            → If variance_amount is negative (shortage): the shortage amount
+//                              REMAINS as a debit on the agent_ledger — it is NOT automatically forgiven.
+//                              Director must explicitly log a Manual_Adjustment to forgive the shortage.
+//                              This keeps the agent accountable for the missing cash.
+//   Manual_Adjustment      = Director correction with mandatory reason
+//
+// RUNNING BALANCE:
+//   Calculated by PostgreSQL trigger on every INSERT.
+//   running_balance = previous_balance + debit_amount - credit_amount
+//   Positive balance = agent owes Jamisan cash
+//   Zero balance = agent is fully settled
+//
+// UI — DAILY SUMMARY WITH EXPANDABLE ROWS:
+//   Default view shows one row per day per agent.
+//   Each day row shows: orders delivered, logistics deducted,
+//   waybills, remittance, daily net movement, running balance.
+//   Clicking a day row expands to show individual transactions.
+//
+// DAYS OUTSTANDING CALCULATION:
+//   days_outstanding = today - MAX(created_at WHERE transaction_type = 'Cash_Remitted')
+//   If agent has never remitted: today - date of first delivery
+//   If running_balance = 0: show as Settled regardless of last remittance date
+//
+// WIDGET ON OPS/FINANCE DASHBOARD:
+//   Grand total: Total Cash Floating with Agents = SUM of all positive balances
+//   Table of all agents with: name, state, balance, days outstanding, colour status
+//   Colour coding: Red = 7+ days, Yellow = 3-6 days, Green = 0-2 days, Grey = Settled
+//   Filters: by state, by colour status, by days outstanding range
+//   Clicking agent row opens their full ledger statement
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table agent_ledger {
+  id integer [primary key, increment]
+  agent_id integer [not null]
+  // 📊 WEEKLY REPORT USAGE:
+  //   Section 6 — Agent Performance: current running_balance and days outstanding
+  //               per agent. Colour coded Red/Yellow/Green/Grey.
+  //   Section 8 — Remittance Report: outstanding balance = SUM of positive
+  //               running_balance across all agents as at end of period.
+  //               Individual agent balances listed with days outstanding.
+  transaction_type varchar(100) [not null, note: 'Order_Delivered, Logistics_Fee_Retained, Waybill_Paid_By_Agent, Return_Fee_Retained, Cash_Remitted, Manual_Adjustment']
+  reference_id integer [note: 'order_id, waybill_id, or remittance_id — links to source record']
+  reference_table varchar(100) [note: 'orders, waybill_expenses, or agent_remittance — identifies which table reference_id points to']
+  debit_amount decimal(14,2) [default: 0, note: 'Cash agent owes Jamisan']
+  credit_amount decimal(14,2) [default: 0, note: 'Cash Jamisan owes agent OR cash agent remitted']
+  running_balance decimal(14,2) [not null, note: 'Calculated by trigger: previous_balance + debit_amount - credit_amount']
+  currency_code varchar(10) [default: 'NGN']
+  notes text [note: 'Auto-populated from source record. Manual entries require explicit reason.']
+  logged_by integer [note: 'System for auto-entries. Director user_id for manual adjustments.']
+  created_at timestamp [default: `now()`]
+}
+
+// Refs — Section 17
+Ref: agent_ledger.agent_id > agents.id
+Ref: agent_ledger.logged_by > users.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 18 — DEPARTMENT TARGETS
+//
+// Configurable performance targets per department.
+// Used by the CSR weekly report screen and Director dashboard.
+//
+// base_conversion_rate:
+//   The minimum acceptable conversion rate for this department.
+//   CSR report flags performance below this rate.
+//   Example: Gadgets = 35%, Beauty = 43%
+//
+// target_conversion_rate:
+//   The aspirational conversion rate — what a strong performer achieves.
+//   Used for Planned Sales calculation on CSR weekly report.
+//   Example: Gadgets = 40%, Beauty = 50%
+//
+// planned_sales_rate:
+//   The rate used to calculate Planned Sales on the weekly report.
+//   Currently hardcoded at 70% in Google Sheets. Now configurable per department.
+//   Example: Beauty = 70%, Gadgets = 65%
+//
+// Only Directors can update these targets.
+// Changes are logged in the audit trail.
+// Effective from the date set — historical reports use the rate
+// that was active at the time of the report period.
+//
+// 📊 WEEKLY REPORT USAGE:
+//   Section 1 — Team Performance Summary: benchmark and target_conversion_rate
+//               used to determine Above/Below status per CSR.
+//   Section 2 — CSR Performance Table: benchmark column value comes from
+//               base_conversion_rate. Target Sales column = orders x target_conversion_rate.
+//   Section 3 — Individual CSR Breakdowns: Planned Sales = orders x planned_sales_rate.
+//               Conversion rate flagged if below base_conversion_rate.
+// Query: SELECT WHERE department_id = X AND effective_from <= period_end
+//        ORDER BY effective_from DESC LIMIT 1  (gets the rate active at that time)
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table department_targets {
+  id integer [primary key, increment]
+  department_id integer [not null, note: 'NOT unique — multiple rows per department allowed for historical tracking. Query uses effective_from to get the active rate at any point in time.']
+  base_conversion_rate decimal(5,2) [not null, note: 'Minimum acceptable rate e.g. 35.00 for Gadgets']
+  target_conversion_rate decimal(5,2) [not null, note: 'Strong performer rate e.g. 40.00 for Gadgets']
+  planned_sales_rate decimal(5,2) [not null, default: 70.00, note: 'Used for Planned Sales calc on CSR report. Was hardcoded 70% in Google Sheets.']
+  effective_from date [not null, note: 'When this target set came into effect']
+  set_by integer [not null, note: 'Director who set the targets']
+  notes text [note: 'Reason for target change if applicable']
+  is_active boolean [default: true]
+  created_at timestamp [default: `now()`]
+}
+
+// Refs — Section 18
+Ref: department_targets.department_id > departments.id
+Ref: department_targets.set_by > users.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 19 — VENDORS
+//
+// Tracks all third-party suppliers and service providers that support operations.
+// Separate from agents (who handle last-mile delivery).
+// Vendors supply goods, materials, or logistics services to Jamisan directly.
+//
+// Examples of vendor types:
+//   Shipping Agent       — international freight forwarder (Alibaba shipments)
+//   Warehouse Agent      — storage and handling provider
+//   Packaging Supplier   — supplies packing sacks
+//   Print Supplier       — supplies printed courier bags
+//
+// Permissions: Ops Manager and Directors can add/edit vendors.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table vendors {
+  id integer [primary key, increment]
+  name varchar(200) [not null]
+  vendor_type varchar(100) [note: 'Shipping Agent, Warehouse Agent, Packaging Supplier, Print Supplier, Other']
+  phone_1 varchar(20)
+  phone_2 varchar(20)
+  address text
+  city varchar(100)
+  admin_level_1_id integer [note: 'State/Region']
+  admin_level_2_id integer [note: 'LGA/District']
+  country_id integer [note: 'Defaults to Nigeria']
+  comments text [note: 'Describe the service this vendor provides']
+  is_active boolean [default: true]
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+// Refs — Section 19
+Ref: vendors.admin_level_1_id > admin_level_1.id
+Ref: vendors.admin_level_2_id > admin_level_2.id
+Ref: vendors.country_id > countries.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 20 — LESSONS LEARNED (KNOWLEDGE BASE)
+//
+// Centralises tribal knowledge under strict executive oversight.
+// All staff can submit and read published lessons.
+// Only Directors can publish or reject submissions.
+//
+// PUBLISHING PIPELINE:
+//   1. Staff member submits a proposed lesson (status = Pending)
+//   2. Draft enters Director review queue
+//   3. Director clicks Publish as Official → status = Published
+//   4. Director can reject with mandatory reason → status = Rejected
+//   No staff upvotes or peer approval — Director authority only.
+//
+// SEARCH:
+//   Full-text search on title, content, and category.
+//   Searchable by all staff for Published lessons.
+//   Pending and Rejected visible to Director only.
+//
+// CATEGORIES:
+//   Managed via lesson_categories lookup table.
+//   Directors only can add new categories.
+//   Starting categories: Sales Script, Logistics Warning,
+//   CRM SOP, Fraud Prevention, Other.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table lesson_categories {
+  id integer [primary key, increment]
+  name varchar(100) [not null, unique, note: 'Sales Script, Logistics Warning, CRM SOP, Fraud Prevention, Other']
+  is_active boolean [default: true]
+  created_by integer [not null, note: 'Director user_id']
+  created_at timestamp [default: `now()`]
+}
+
+Table lessons_learned {
+  id integer [primary key, increment]
+  title varchar(300) [not null]
+  content text [not null, note: 'Rich text — sales scripts, SOPs, warnings, tactics']
+  category_id integer [not null]
+  submitted_by integer [not null, note: 'Any staff member — user_id']
+  status varchar(50) [not null, default: 'Pending', note: 'Pending, Published, Rejected']
+  rejection_reason text [note: 'Director must provide reason if rejecting']
+  reviewed_by integer [note: 'Director user_id']
+  reviewed_at timestamp
+  published_at timestamp
+  is_active boolean [default: true]
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+// Refs — Section 20
+Ref: lesson_categories.created_by > users.id
+Ref: lessons_learned.category_id > lesson_categories.id
+Ref: lessons_learned.submitted_by > users.id
+Ref: lessons_learned.reviewed_by > users.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 21 — HR MODULE ADDITIONS
+//
+// The core HR data is already covered by:
+//   users, roles, employee_profiles, session_log, payroll, audit_log
+//
+// This section adds last_active_at to session_log to support idle
+// time tracking for the digital punch-clock HR staff report.
+//
+// HR STAFF REPORT — ACCESS:
+//   Visible to HR, Directors, and Ops Manager only.
+//   Not visible to the employee themselves.
+//
+// HR STAFF REPORT — DATA SOURCES:
+//   Login timestamps   → session_log.logged_in_at
+//   Logout timestamps  → session_log.logged_out_at
+//   Idle time          → session_log.last_active_at (new field — see note)
+//   Daily order volume → COUNT(orders) WHERE csr_id = X AND DATE = today
+//   Audit activity     → COUNT(audit_log) WHERE user_id = X AND DATE = today
+//
+// NOTE FOR CLAUDE CODE — MODULE 1:
+//   Add last_active_at timestamp to session_log table.
+//   Application updates this field on every API request from the user.
+//   Idle time = last_active_at - login_at (minus active periods).
+//
+// ONBOARDING:
+//   Director creates user account → credentials auto-generated
+//   Username format: firstname.lastinitial (e.g. foluke.a)
+//   Temporary password sent to employee email
+//
+// OFFBOARDING:
+//   Director sets users.is_active = false → immediate lockout
+//   All active sessions invalidated instantly
+//   Audit log entry created with offboarding timestamp
+// ─────────────────────────────────────────────────────────────────────────────
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 22 — ESCALATIONS
+//
+// Handles conditional escalations from CSRs to Ops Manager.
+// The Escalate button is HIDDEN by default — only appears when a strict
+// system rule is triggered. Prevents CSR laziness and dashboard flooding.
+//
+// ESCALATION TRIGGERS:
+//   1. Banned Customer: System flags row red → Request Unban button appears
+//      → Forces mandatory text: "Why should this user be unbanned?"
+//   2. Zero Fee: CSR attempts Cash Paid with ₦0 logistics fee → auto-escalates
+//   3. Flag for Ops: General escalation with mandatory reason code selection
+//
+// RESOLUTION:
+//   Every escalation requires Ops Manager action.
+//   Cannot be left open indefinitely.
+//   Resolution logged with timestamp, action, and notes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table escalation_reason_codes {
+  id integer [primary key, increment]
+  code varchar(100) [not null, unique]
+  description varchar(200) [not null]
+  is_active boolean [default: true]
+  created_by integer [not null, note: 'Director user_id — Directors manage these codes']
+  created_at timestamp [default: `now()`]
+  // Starting seed values:
+  // Banned_Customer_Unban_Request
+  // Fraud_Suspected
+  // Agent_Refusing_Pickup
+  // Wrong_Item_Shipped
+  // Zero_Fee_Approval_Request
+  // Auditor_Flag (raised by Auditor — routes to Director Approvals panel)
+  // Other
+}
+
+Table order_escalations {
+  id integer [primary key, increment]
+  order_id integer [not null]
+  reason_code_id integer [not null]
+  raised_by integer [not null, note: 'user_id of staff member who raised the escalation — CSR for order flags, Auditor for Auditor_Flag reason code']
+  raised_at timestamp [default: `now()`]
+  csr_notes text [not null, note: 'Mandatory explanation from CSR — cannot be blank']
+  status varchar(50) [not null, default: 'Open', note: 'Open, Approved, Rejected, Reassigned']
+  resolved_by integer [note: 'Ops Manager or Director user_id who resolved']
+  resolved_at timestamp
+  resolution_action varchar(100) [note: 'Unban_User, Approve_Zero_Fee, Reassign, Reject, Investigate']
+  resolution_notes text [note: 'Ops Manager explanation of action taken']
+  created_at timestamp [default: `now()`]
+}
+
+// Refs — Section 22
+Ref: escalation_reason_codes.created_by > users.id
+Ref: order_escalations.order_id > orders.id
+Ref: order_escalations.reason_code_id > escalation_reason_codes.id
+Ref: order_escalations.raised_by > users.id
+Ref: order_escalations.resolved_by > users.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 23 — ACCOUNTANT MODULE ADDITIONS
+//
+// Variance handling on remittance verification.
+// When Accountant confirms actual bank deposit differs from expected amount,
+// the variance is auto-routed to Financial Losses expense category.
+// Ops Manager and Director are notified with agent name, expected, actual,
+// shortage amount, and reason code.
+//
+// RECEIPT STORAGE:
+//   No file upload to VPS. Accountant uploads receipt to Google Drive manually,
+//   copies the shareable link, pastes into receipt_url field on the expense entry.
+//   Clicking the link opens the receipt in a new tab.
+//   Simple, zero infrastructure cost, works on any device.
+//   Applied to: expenses, procurement_expenses, ad_expenses, waybill_expenses.
+//
+// FINANCIAL LOSSES CATEGORY:
+//   System-reserved expense category in expense_categories table.
+//   Only the automated variance routing can write to this category.
+//   Not manually selectable by Accountant or any staff.
+//   Ensures books balance when agent shortages occur.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table remittance_variance_reason_codes {
+  id integer [primary key, increment]
+  code varchar(100) [not null, unique]
+  description varchar(200) [not null]
+  is_active boolean [default: true]
+  created_at timestamp [default: `now()`]
+  // Starting seed values:
+  // Agent_Shortage — agent deliberately short-paid
+  // Bank_Charges — bank deducted fees from transfer
+  // Partial_Payment — agreed partial remittance
+  // Transfer_Error — bank processing error
+  // Overpayment — agent sent more than owed
+}
+
+// Refs — Section 23
+Ref: agent_remittance.variance_reason_id > remittance_variance_reason_codes.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 24 — AUDITOR SPOT CHECKS
+//
+// The Auditor module pulls 50 random orders daily (Cash Paid, Rejected,
+// CSR Skipped) for spot-checking. Auditor marks each as Pass or Flagged.
+// Flagged orders escalate to Director with auditor notes.
+//
+// NOTE: This table supports the Auditor module which is still pending
+// full UI/UX spec. The table structure is confirmed — category values
+// are managed via auditor_check_categories lookup table (not hardcoded)
+// following the same pattern as failure_reason_codes and escalation_reason_codes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table auditor_check_categories {
+  id integer [primary key, increment]
+  code varchar(100) [not null, unique]
+  description varchar(200) [not null]
+  is_active boolean [default: true]
+  created_at timestamp [default: `now()`]
+  // Starting seed values:
+  // Zero_Fee_Delivery
+  // High_Bounce_Order
+  // Rapid_Fail
+  // Suspicious_Price_Change
+  // Duplicate_Customer
+  // CSR_Skipped_Without_Reason
+}
+
+Table auditor_spot_checks {
+  id integer [primary key, increment]
+  order_id integer [not null]
+  auditor_id integer [not null]
+  check_date date [not null, default: `CURRENT_DATE`]
+  check_category_id integer [not null]
+  result varchar(50) [not null, note: 'Pass, Flagged']
+  auditor_notes text
+  escalated_to_director boolean [default: false]
+  director_reviewed_at timestamp
+  created_at timestamp [default: `now()`]
+}
+
+// Refs — Section 24
+Ref: auditor_spot_checks.order_id > orders.id
+Ref: auditor_spot_checks.auditor_id > users.id
+Ref: auditor_spot_checks.check_category_id > auditor_check_categories.id
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 25 — WEEKLY REPORTS
+//
+// Stores generated weekly report metadata and manual text inputs.
+// Prevents manual notes from vanishing when PDF is closed.
+// PDF stored as Google Drive link — same pattern as expense receipts.
+//
+// REPORT TYPES:
+//   CSR_Personal  — Section 3 only, generated by individual CSR
+//   Ops_Full      — All 10 sections, generated by Ops Manager
+//
+// ALL 10 SECTIONS OF THE OPS_FULL REPORT:
+//   Section 1  — Team Performance Summary
+//                Source: orders table (conversion rate, orders, sales, sales gap vs target)
+//                Uses: department_targets for benchmark and target_conversion_rate
+//   Section 2  — CSR Performance Table
+//                Source: orders + csr_performance_monthly
+//                Per CSR: orders, sales, conversion rate, benchmark status, planned sales
+//   Section 3  — Individual CSR Breakdowns (also used for CSR_Personal report)
+//                Source: orders + complaints + failure_reason_codes
+//                Per product per CSR: all status columns, failure reasons, complaints
+//                CSR Skipped and Interested flagged red if > 0 at period end
+//   Section 4  — Inventory and Stock Movement
+//                Source: inventory + goods_movement + waybill_expenses + trashed_items
+//                Running balance (waybill_stock, reserved, decremented, available)
+//                Goods movement within the period. Waybill movements.
+//   Section 5  — Returns and Complaints Analysis
+//                Source: complaints + orders + failure_reason_codes
+//                Complaints grouped by product, type, resolution, cost
+//   Section 6  — Agent Performance
+//                Source: orders + agent_ledger + agent_remittance
+//                Per agent: orders, sales, pending, abandoned, balance, days outstanding
+//   Section 7  — Financial Summary
+//                Source: orders + expenses + procurement_expenses + ad_expenses + waybill_expenses
+//                Revenue, Expenses breakdown, Profit/Loss, Net Margin %, CPO, CPS
+//   Section 8  — Remittance Report
+//                Source: agent_remittance + agent_ledger
+//                Amount to be remitted, amount remitted, outstanding balance per agent
+//   Section 9  — Cash Flow Table (manual entry by Accountant)
+//                Providus Bank: inflow, outflow, comments
+//                Moniepoint Bank: inflow, outflow, comments
+//                Accountant Notes — mandatory free text before Generate button activates
+//   Section 10 — Any Other Business (manual entry by Ops Manager)
+//                Free text entered by Ops Manager before PDF generation
+//
+// WORKFLOW:
+//   1. Accountant fills Section 9 fields (cash flow numbers + accountant_notes)
+//      → Clicking Save marks cash_flow_logged = true on this record
+//      → Clears Pending Actions reminder for Accountant
+//   2. Ops Manager fills ops_aob (Section 10)
+//   3. Generate button activates only when cash_flow_logged = true
+//   4. System compiles PDF, uploads to Google Drive, stores pdf_url here
+//   5. Record persists as historical archive of every generated report
+// ─────────────────────────────────────────────────────────────────────────────
+
+Table weekly_reports {
+  id integer [primary key, increment]
+  report_type varchar(50) [not null, note: 'CSR_Personal, Ops_Full']
+  department_id integer [note: 'Department this report covers']
+  csr_id integer [note: 'For CSR_Personal reports — which CSR this belongs to']
+  week_start_date date [not null]
+  week_end_date date [not null]
+
+  // ── SECTION 9 — CASH FLOW (Accountant fills before generation) ──────────
+  providus_inflow decimal(14,2) [note: 'Total cash received into Providus account for the week']
+  providus_outflow decimal(14,2) [note: 'Total cash paid out of Providus account for the week']
+  providus_comments text [note: 'Accountant narrative on Providus activity e.g. major receipts or payments']
+  moniepoint_inflow decimal(14,2) [note: 'Total cash received into Moniepoint account for the week']
+  moniepoint_outflow decimal(14,2) [note: 'Total cash paid out of Moniepoint account for the week']
+  moniepoint_comments text [note: 'Accountant narrative on Moniepoint activity']
+  accountant_notes text [note: 'Section 9 closing notes — mandatory before Generate button activates']
+  cash_flow_logged boolean [default: false, note: 'Set true when Accountant saves Section 9 fields. Generate button blocked until true. Clears Pending Actions reminder.']
+
+  // ── SECTION 10 — ANY OTHER BUSINESS (Ops Manager fills before generation) ─
+  ops_aob text [note: 'Section 10 — Any Other Business entered by Ops Manager before PDF generation']
+
+  // ── CSR PERSONAL REPORT ─────────────────────────────────────────────────
+  csr_aob text [note: 'Any Other Business entered by CSR for their Section 3 personal report']
+
+  // ── METADATA ────────────────────────────────────────────────────────────
+  generated_by integer [not null, note: 'user_id of whoever clicked Generate']
+  pdf_url varchar(500) [note: 'Google Drive link to archived PDF — same pattern as expense receipts']
+  created_at timestamp [default: `now()`]
+}
+
+// Refs — Section 25
+Ref: weekly_reports.department_id > departments.id
+Ref: weekly_reports.csr_id > users.id
+Ref: weekly_reports.generated_by > users.id
