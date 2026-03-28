@@ -1,0 +1,437 @@
+**JAMISAN CRM**
+
+Day 5 — Tech Stack, Git Structure & Environment Configuration
+
+*Pre-Build Initialisation | Spec Week Complete*
+
+Jamisan Global Nigeria Ltd.
+
+Version 1.0  |  Spec Week 2025  |  CONFIDENTIAL
+
+# **5.1 Core Tech Stack**
+
+Selected to prioritise backend database reliability and a high-speed, zero-reload frontend without the overhead of React or Vue.
+
+| **Item** | **Detail** |
+| --- | --- |
+| **Database** | PostgreSQL — relational integrity mandatory for financial routing and agent ledger triggers. |
+| **Backend** | Node.js with Express.js — high-concurrency webhook ingestion and API routing. |
+| **Frontend UI** | HTML + Tailwind CSS + HTMX — seamless slide-out panels and tab switching without full page reloads. No build step needed for HTMX. |
+| **Frontend reactivity** | Alpine.js — lightweight client-side state for On Break toggle, Order Bump field expansion, and modal interactions. |
+| **Template engine** | EJS or plain HTML partials — HTMX swaps fragments, no full-page renders. |
+| **Authentication** | JWT-based with role permissions. 2FA via TOTP for Directors, Ops Manager, and Accountant. |
+| **Process manager** | PM2 — keeps Node.js running continuously and auto-restarts on server reboot. |
+| **Reverse proxy** | Nginx — receives Cloudflare traffic on ports 80/443, handles SSL termination, routes to Node on port 3000. |
+| **CDN and security** | Cloudflare — sits in front of VPS. Handles caching, DDoS protection, and bot filtering. All traffic enters via Cloudflare. |
+| **Version control** | Git — private GitHub repository, one branch per module. |
+| **Build tool** | Claude Code CLI — every session anchored to SPEC.md. |
+
+# **5.2 Folder and File Structure**
+
+Strict modular MVC layout. Supports 9 distinct role interfaces and 9 build modules without cross-contamination.
+
+*⚠ This structure is the contract. Claude Code must not deviate from it. New files go in the correct directory — no flat dumping into root or src/.*
+
+Monorepo layout — the ERP lives inside the existing jamisan GitHub repository:
+
+jamisan/                          ← root repo (existing)
+
+├── erp/                          ← Jamisan ERP (this project)
+
+│   ├── SPEC.md
+
+│   ├── .env.example
+
+│   ├── package.json
+
+│   └── src/
+
+├── wordpress-plugins/            ← WP plugins and site work
+
+├── landing-pages/                ← Sales page assets
+
+└── README.md                     ← Root project index
+
+Branch naming uses erp/ prefix to distinguish from other projects in the monorepo:
+
+erp/feature/database-schema  |  erp/feature/auth-system  |  erp/feature/csr-interface  etc.
+
+Full ERP folder structure inside jamisan/erp/:
+
+jamisan/erp/
+
+├── .env                        # Local secrets — NEVER committed
+
+├── .env.example                # Template for all required variables
+
+├── .gitignore
+
+├── README.md                   # Setup instructions and project overview
+
+├── SPEC.md                     # Master spec — Claude Code reads this first every session
+
+├── package.json
+
+│
+
+├── src/
+
+│   ├── server.js               # Express initialisation and middleware registration
+
+│   │
+
+│   ├── config/
+
+│   │   ├── db.js               # PostgreSQL pool connection (pg library)
+
+│   │   └── mcp.js              # MCP server config — Context7, Sequential Thinking, PostgreSQL
+
+│   │
+
+│   ├── middlewares/
+
+│   │   ├── auth.js             # JWT verification middleware
+
+│   │   ├── rbac.js             # Role-Based Access Control — checks role per route
+
+│   │   └── webhookAuth.js      # Pabbly webhook Bearer token verification
+
+│   │
+
+│   ├── routes/
+
+│   │   ├── api/                # JSON API routes — /api/orders, /api/agents etc
+
+│   │   ├── webhook/            # Webhook receivers — /api/webhook/order-ingestion
+
+│   │   └── view/               # HTMX view routes — /view/csr, /view/ops etc
+
+│   │
+
+│   ├── controllers/
+
+│   │   ├── orders.js
+
+│   │   ├── auth.js
+
+│   │   ├── csr.js
+
+│   │   ├── ops.js
+
+│   │   ├── finance.js
+
+│   │   ├── warehouse.js
+
+│   │   └── ...                 # One controller per major domain
+
+│   │
+
+│   ├── services/
+
+│   │   ├── orderIngestion.js   # Return customer check, Order ID gen, ban check
+
+│   │   ├── watiExport.js       # Real-time Cash Paid → Google Sheet write
+
+│   │   ├── notifications.js    # Email + WATI agent notifications
+
+│   │   ├── cronJobs.js         # All 6 scheduled cron jobs
+
+│   │   ├── agentLedger.js      # Ledger trigger logic and running balance
+
+│   │   ├── stockTriggers.js    # Reserve, decrement, rollback logic
+
+│   │   ├── payroll.js          # Commission calculation and tier assignment
+
+│   │   └── pdfGenerator.js     # Weekly report and CSR personal report PDF
+
+│   │
+
+│   ├── models/
+
+│   │   ├── orders.js           # All ORDER queries
+
+│   │   ├── customers.js
+
+│   │   ├── agents.js
+
+│   │   ├── inventory.js
+
+│   │   ├── finance.js
+
+│   │   ├── users.js
+
+│   │   └── ...                 # One model file per major table group
+
+│   │
+
+│   ├── utils/
+
+│   │   ├── phoneNormalise.js   # 5-step E.164 normalisation
+
+│   │   ├── dateHelpers.js      # WAT timezone conversions, DFO calculation
+
+│   │   ├── formatCurrency.js   # ₦ formatting for UI
+
+│   │   └── orderIdGen.js       # FJAMD sequence generation
+
+│   │
+
+│   └── views/
+
+│       ├── layouts/
+
+│       │   ├── shell.html      # Global shell — sidebar + top nav wrapper
+
+│       │   └── sidebar.html    # Role-aware sidebar partial
+
+│       │
+
+│       ├── pages/
+
+│       │   ├── login.html
+
+│       │   ├── csr/            # CSR workspace pages
+
+│       │   ├── ops/            # Ops Manager pages
+
+│       │   ├── director/       # Director dashboard pages
+
+│       │   ├── accountant/
+
+│       │   ├── hr/
+
+│       │   ├── warehouse/
+
+│       │   ├── auditor/
+
+│       │   ├── smm/            # Social Media Manager
+
+│       │   └── analyst/        # Data Analyst
+
+│       │
+
+│       └── partials/           # HTMX fragments — no full page reload
+
+│           ├── slideOut.html   # 75% slide-out panel
+
+│           ├── gridRow.html    # Single order row for inline updates
+
+│           ├── hygieneTab.html # Tab content swap
+
+│           └── toast.html      # Toast notification
+
+│
+
+└── scripts/
+
+    ├── migrate.js              # Runs jamisan_erp_schema.sql against PostgreSQL
+
+    └── seed.js                 # Seeds all reference data (roles, statuses, categories)
+
+# **5.3 Git Branching Strategy**
+
+*⚠ The main branch is ALWAYS stable. Never commit directly to main. Every module gets its own branch. Merge only when the module is fully tested.*
+
+| **Item** | **Detail** |
+| --- | --- |
+| **Repository** | Existing private GitHub repository — jamisan. ERP lives in the erp/ subfolder. |
+| **Default branch** | main — production-ready at all times |
+| **Module branches** | erp/feature/database-schema, erp/feature/auth-system, erp/feature/order-ingestion, erp/feature/csr-interface, erp/feature/admin-interface, erp/feature/finance-module, erp/feature/reporting-dashboard, erp/feature/wati-integration, erp/feature/polish-deploy |
+| **Branch prefix rationale** | erp/ prefix distinguishes ERP branches from other projects (wordpress-plugins, landing-pages) in the same monorepo. |
+| **Merge rule** | Pull request to main only when module is tested end-to-end. No direct pushes to main. |
+| **Commit message format** | feat: describe what was built. fix: describe what was corrected. docs: spec or README update. |
+| **First commit** | SPEC.md committed to main before any code is written. This is the anchor. |
+
+Session ritual — every Claude Code session without exception:
+
+| **Item** | **Detail** |
+| --- | --- |
+| **Step 1 — Pull** | git pull origin main |
+| **Step 2 — Read** | Open SPEC.md. Read fully before touching any code. |
+| **Step 3 — Branch** | git checkout feature/[current-module] |
+| **Step 4 — Read branch** | Read existing files in the current branch before writing anything new. |
+| **Step 5 — Build** | Write code in focused, logical increments. |
+| **Step 6 — Commit** | Commit at every meaningful checkpoint with descriptive message. |
+| **Step 7 — Test** | Test what was built before ending the session. |
+| **Step 8 — Merge** | PR to main only when module is confirmed working. |
+| **Step 9 — Review** | End of session: identify any decisions made today not already in spec. Update agenda. |
+
+# **5.4 Environment Variables — .env.example**
+
+*⚠ .env must be in .gitignore and NEVER committed. Use .env.example as the template. On the VPS, set variables via PM2 ecosystem file or system environment, not a committed .env file.*
+
+# ─────────────────────────────────────────────────────────────────
+
+# CORE APPLICATION
+
+# ─────────────────────────────────────────────────────────────────
+
+NODE_ENV=development
+
+APP_BASE_URL=https://app.jamisan.com
+
+PORT=3000
+
+# ─────────────────────────────────────────────────────────────────
+
+# DATABASE
+
+# ─────────────────────────────────────────────────────────────────
+
+DATABASE_URL=postgresql://username:password@localhost:5432/jamisan_erp
+
+# ─────────────────────────────────────────────────────────────────
+
+# SECURITY AND AUTHENTICATION
+
+# ─────────────────────────────────────────────────────────────────
+
+JWT_SECRET=replace_with_256bit_random_string
+
+JWT_EXPIRES_IN=8h
+
+TRUSTED_DEVICE_DAYS=30
+
+# ─────────────────────────────────────────────────────────────────
+
+# PABBLY WEBHOOK
+
+# ─────────────────────────────────────────────────────────────────
+
+PABBLY_WEBHOOK_SECRET=replace_with_pabbly_bearer_token
+
+# ─────────────────────────────────────────────────────────────────
+
+# GOOGLE SHEETS API — CASH PAID EXPORT
+
+# ─────────────────────────────────────────────────────────────────
+
+GOOGLE_SERVICE_ACCOUNT_JSON=./config/jamisan-erp-service-account.json
+
+GOOGLE_CASH_PAID_SHEET_ID=1BF6y9AnqvLCBtidro_MgnAUxPUHmKGcWcUHrKLx4ExU
+
+GOOGLE_CASH_PAID_TAB_NAME=CashPaid
+
+# ─────────────────────────────────────────────────────────────────
+
+# WATI — V2 DIRECT API (not used in V1)
+
+# ─────────────────────────────────────────────────────────────────
+
+WATI_API_TOKEN=replace_with_wati_bearer_token
+
+WATI_TENANT_ID=1052873
+
+WATI_SERVER=https://live-mt-server.wati.io
+
+# ─────────────────────────────────────────────────────────────────
+
+# EMAIL NOTIFICATIONS (SMTP)
+
+# ─────────────────────────────────────────────────────────────────
+
+EMAIL_SMTP_HOST=smtp.yourprovider.com
+
+EMAIL_SMTP_PORT=465
+
+EMAIL_SMTP_USER=alerts@jamisan.com
+
+EMAIL_SMTP_PASS=replace_with_smtp_password
+
+EMAIL_FROM_ADDRESS=alerts@jamisan.com
+
+EMAIL_DIRECTOR_ADDRESS=director@jamisan.com
+
+EMAIL_OPS_ADDRESS=ops@jamisan.com
+
+# ─────────────────────────────────────────────────────────────────
+
+# BACKUP
+
+# ─────────────────────────────────────────────────────────────────
+
+BACKUP_LOCAL_PATH=/var/backups/jamisan-erp
+
+RCLONE_REMOTE_NAME=gdrive
+
+RCLONE_REMOTE_PATH=Jamisan-CRM-Backups
+
+# **5.5 .gitignore**
+
+# Node
+
+node_modules/
+
+npm-debug.log
+
+yarn-error.log
+
+# Environment and secrets
+
+.env
+
+*.pem
+
+config/*service-account*.json
+
+# OS files
+
+.DS_Store
+
+Thumbs.db
+
+# Logs
+
+logs/
+
+*.log
+
+# Build artefacts
+
+dist/
+
+.cache/
+
+*ℹ Note: config/*service-account*.json catches the Google service account file regardless of exact filename. More reliable than hardcoding the filename in .gitignore.*
+
+# **5.6 MCP Server Configuration**
+
+Three MCP servers must be active in Claude Code for the Build Blitz. These give Claude Code direct database access and deep context persistence across sessions.
+
+| **Item** | **Detail** |
+| --- | --- |
+| **Context7** | Maintains UI/UX rules and RBAC roles across all 9 modules. Prevents hallucinating permissions or interface patterns mid-session. |
+| **Sequential Thinking** | Enforces step-by-step logic for complex financial routing — trigger rollbacks, variance routing, commission retroactive calculations. |
+| **PostgreSQL MCP** | Direct database connection. Claude Code can run schema SQL, test trigger firing, verify seed data, and query live data during build sessions. |
+| **Connection string** | postgresql://localhost/jamisan_erp — placeholder until VPS database is created in Module 1. Update after VPS setup. |
+
+# **5.7 VPS Deployment Target**
+
+| **Item** | **Detail** |
+| --- | --- |
+| **VPS provider** | Hetzner Cloud — CPX32 plan (4 vCPU AMD EPYC, 8 GB RAM, 80 GB NVMe SSD, 20 TB traffic). Finland datacenter. Separate from Bluehost which hosts sales websites. |
+| **CDN and security** | Cloudflare — sits in front of VPS. Handles caching, DDoS protection, and bot filtering. All traffic enters via Cloudflare. |
+| **Nginx** | Reverse proxy on VPS. Receives traffic from Cloudflare on ports 80 and 443. Handles SSL termination. Routes to Node.js on port 3000 internally. |
+| **Node process** | PM2 — keeps Express running continuously. Auto-restarts on crash or server reboot. Cluster mode optional for V2 scaling. |
+| **PostgreSQL** | Runs natively on VPS. Secured behind firewall — accessible ONLY to localhost (the Node app). No public PostgreSQL port. |
+| **Domain** | app.jamisan.com — subdomain of existing jamisan.com domain. DNS A record points to VPS IP via Cloudflare proxy. |
+| **SSL** | Let's Encrypt certificate managed by Certbot on Nginx. Auto-renews every 90 days. |
+| **Backup** | pg_dump runs every 6 hours via cron. Stored locally at BACKUP_LOCAL_PATH. rclone pushes daily snapshot to Google Drive. Backup failure triggers email alert to Director. |
+
+# **5.8 SPEC.md — Master Reference File**
+
+SPEC.md lives in the repository root and is the FIRST file Claude Code reads at the start of every session without exception. It is a concise operational reference — not a full spec dump. Links to the full spec documents for deep detail.
+
+*⚠ SPEC.md is committed to main BEFORE any code is written. It is the anchor of the entire Build Blitz. Every Claude Code session opens this file first.*
+
+| **Item** | **Detail** |
+| --- | --- |
+| **Contents** | Project overview, current build status, tech stack, database summary, session ritual, module list with branch names, key decisions quick reference, links to full spec documents. |
+| **Length target** | Readable in under 2 minutes. Maximum 200 lines. Not a copy of the Day 1-4 documents. |
+| **Updates** | Updated at the end of every build session when new decisions are made. Say 'update the agenda' to trigger regeneration. |
+| **Format** | Markdown. GitHub renders it cleanly. Claude Code reads it natively. |
+| **Critical rule** | No Claude Code session proceeds without reading SPEC.md first. This prevents context drift across sessions. |
+
+SPEC.md is generated as a separate file alongside this document. See Jamisan_ERP_SPEC.md in the outputs folder.
+
+*Jamisan ERP — Spec Week Complete | Build Blitz begins with Module 1: Database Schema*
