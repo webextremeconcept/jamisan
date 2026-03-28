@@ -13,13 +13,15 @@ const globalLimiter = rateLimit({
 });
 
 /**
- * Auth rate limiter: 20 requests per 15 minutes per IP.
+ * Auth rate limiter: 60 requests per 15 minutes per IP.
  * Applies to /auth/* routes only.
- * Account lockout (per-username) is handled separately in the controller.
+ * Account lockout (per-username, 5 attempts → 30min lock) is the primary
+ * per-account protection. This rate limiter provides defence-in-depth
+ * against distributed password-spray attacks from a single IP.
  */
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: 60,
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: 'Too many authentication attempts — try again later' },
