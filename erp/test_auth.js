@@ -6,6 +6,7 @@
  */
 const http = require('http');
 const { Pool } = require('pg');
+const bcrypt = require('bcryptjs');
 const speakeasy = require('speakeasy');
 
 const BASE = 'http://localhost:3000';
@@ -106,13 +107,23 @@ function log(test, status, detail) {
 }
 
 async function run() {
-  // Reset test users
+  // Reset test users — including password hash so test 6's password change
+  // does not carry over into subsequent runs.
+  const csrPasswordHash = await bcrypt.hash('TestPass123!', 12);
+  await dbQuery(
+    `UPDATE users
+     SET failed_login_attempts = 0, locked_until = NULL, token_version = 0,
+         two_fa_enabled = false, two_fa_secret = NULL, pending_2fa_secret = NULL,
+         is_active = true, password_hash = $1
+     WHERE id = 100`,
+    [csrPasswordHash]
+  );
   await dbQuery(`
     UPDATE users
     SET failed_login_attempts = 0, locked_until = NULL, token_version = 0,
         two_fa_enabled = false, two_fa_secret = NULL, pending_2fa_secret = NULL,
         is_active = true
-    WHERE id IN (100, 101)
+    WHERE id = 101
   `);
   await dbQuery("DELETE FROM session_log WHERE user_id IN (100, 101)");
   await dbQuery(`

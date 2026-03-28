@@ -13,7 +13,7 @@ const { logAudit } = require('../utils/auditLogger');
 
 const BCRYPT_ROUNDS = 12;
 const LOCKOUT_THRESHOLD = 5;
-const LOCKOUT_DURATION_MIN = 30; // eslint-disable-line no-unused-vars
+const LOCKOUT_DURATION_MIN = 30;
 const EMAIL_ALERT_THRESHOLD = 10;
 
 // Roles that require 2FA — exact strings from the database
@@ -77,8 +77,10 @@ async function loadUserById(userId) {
 }
 
 /**
- * FIX 8: Check audit_log for 10+ login failures in 24h and fire alert email.
- * Called after every login_failed audit entry — including unknown-email path.
+ * FIX 8/12: Check audit_log for 10+ login failures in 24h and fire alert email.
+ * FIX 12: Gate prevents duplicate alerts — fires at most once per 24h per email.
+ * A login_alert_sent entry is written to audit_log before the email send to
+ * suppress subsequent triggers within the same window.
  * queryEmail is stored as new_value in audit_log for all login_failed actions.
  */
 async function checkAndSendLoginAlert(queryEmail, displayName) {
@@ -91,6 +93,18 @@ async function checkAndSendLoginAlert(queryEmail, displayName) {
       [queryEmail]
     );
     if (countResult.rows[0].cnt >= EMAIL_ALERT_THRESHOLD) {
+      // FIX 12: Check if alert was already sent in this 24h window
+      const alertedResult = await pool.query(
+        `SELECT COUNT(*)::int AS cnt FROM audit_log
+         WHERE action = 'login_alert_sent'
+           AND new_value = $1
+           AND created_at > now() - interval '24 hours'`,
+        [queryEmail]
+      );
+      if (alertedResult.rows[0].cnt > 0) {
+        return; // alert already sent in this window — suppress duplicate
+      }
+
       const recentFailures = await pool.query(
         `SELECT ip_address, created_at FROM audit_log
          WHERE action = 'login_failed'
@@ -99,6 +113,11 @@ async function checkAndSendLoginAlert(queryEmail, displayName) {
          ORDER BY created_at DESC`,
         [queryEmail]
       );
+
+      // Write audit entry before sending — reduces (but cannot fully eliminate
+      // under concurrent load) duplicate sends. Acceptable for an internal ERP.
+      await logAudit(null, 'login_alert_sent', { newValue: queryEmail });
+
       sendLoginAlertEmail(displayName, recentFailures.rows).catch((err) => {
         console.error('[Auth] Failed to send login alert email:', err.message);
       });
@@ -115,7 +134,7 @@ async function login(req, res) {
   const { email, password } = req.body;
   const ip = getClientIp(req);
 
-  // FIX 6: typeof validation — reject non-string inputs (prevents object injection attacks)
+  // FIX 6/14: typeof validation — reject non-string inputs (prevents object injection attacks)
   if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
     return res.status(400).json({ message: 'Email and password are required' });
   }
@@ -166,6 +185,16 @@ async function login(req, res) {
     return res.status(423).json({ message: 'Invalid email or password' });
   }
 
+  // FIX 13: Lockout expired naturally — reset counter to give user a clean slate.
+  // Without this, failed_login_attempts remains at 5+, causing immediate re-lock
+  // on the next wrong guess after the 30-minute wait period.
+  if (user.locked_until && new Date(user.locked_until) <= new Date()) {
+    await pool.query(
+      `UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1`,
+      [user.id]
+    );
+  }
+
   // Password verification
   const passwordValid = await bcrypt.compare(password, user.password_hash);
 
@@ -175,11 +204,11 @@ async function login(req, res) {
       `UPDATE users
        SET failed_login_attempts = failed_login_attempts + 1,
            locked_until = CASE
-             WHEN failed_login_attempts + 1 >= $2 THEN now() + interval '30 minutes'
+             WHEN failed_login_attempts + 1 >= $2 THEN now() + ($3 * interval '1 minute')
              ELSE locked_until
            END
        WHERE id = $1`,
-      [user.id, LOCKOUT_THRESHOLD]
+      [user.id, LOCKOUT_THRESHOLD, LOCKOUT_DURATION_MIN]
     );
 
     // Audit log — store email in new_value as the 24h alert query key
@@ -246,7 +275,8 @@ async function twoFactorVerify(req, res) {
   const { temp_token, totp_code } = req.body;
   const ip = getClientIp(req);
 
-  if (!temp_token || !totp_code) {
+  // FIX 14: typeof guard — reject non-string totp_code (prevents injection into speakeasy)
+  if (!temp_token || !totp_code || typeof totp_code !== 'string') {
     return res.status(400).json({ message: 'temp_token and totp_code are required' });
   }
 
@@ -323,6 +353,12 @@ async function twoFactorSetup(req, res) {
 
   if (payload.token_version !== user.token_version) {
     return res.status(401).json({ message: 'Session invalidated' });
+  }
+
+  // FIX 11: Guard against double-setup — overwriting pending_2fa_secret would silently
+  // break any authenticator app already scanning the first QR code.
+  if (user.pending_2fa_secret) {
+    return res.status(400).json({ message: '2FA setup is already in progress. Please scan the QR code already sent or contact your Operations Manager.' });
   }
 
   // FIX 3: Guard against re-initiating setup on an already-configured account
@@ -461,6 +497,9 @@ async function refresh(req, res) {
   const accessToken = generateAccessToken(user);
   const refreshToken = generateRefreshToken(user);
 
+  // Audit trail for forensic analysis of stolen refresh token usage
+  await logAudit(user.id, 'token_refreshed', { ipAddress: getClientIp(req) });
+
   return res.status(200).json({
     access_token: accessToken,
     refresh_token: refreshToken,
@@ -475,7 +514,11 @@ async function changePassword(req, res) {
   const ip = getClientIp(req);
   const userId = req.user.id;
 
-  if (!current_password || !new_password) {
+  // FIX 14: typeof guard — non-string new_password would throw in bcrypt.hash
+  if (
+    !current_password || !new_password ||
+    typeof current_password !== 'string' || typeof new_password !== 'string'
+  ) {
     return res.status(400).json({ message: 'current_password and new_password are required' });
   }
 
