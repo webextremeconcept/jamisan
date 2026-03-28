@@ -55,4 +55,39 @@ async function sendLoginAlertEmail(username, attempts) {
   }
 }
 
-module.exports = { sendLoginAlertEmail };
+/**
+ * Send a reconciliation discrepancy alert when |crm - pabbly| > 2.
+ */
+async function sendReconciliationAlertEmail(date, crmCount, pabblyCount, discrepancy) {
+  const recipients = process.env.ALERT_EMAIL_TO;
+  if (!recipients) {
+    console.warn('[Email] ALERT_EMAIL_TO not configured — skipping reconciliation alert');
+    return;
+  }
+
+  const mailOptions = {
+    from: `"Jamisan ERP Operations" <${process.env.SMTP_USER}>`,
+    to: recipients,
+    subject: `[RECONCILIATION ALERT] Order count discrepancy on ${date}`,
+    text: [
+      `Order count discrepancy detected for ${date}.`,
+      '',
+      `  CRM orders:    ${crmCount}`,
+      `  Pabbly orders: ${pabblyCount}`,
+      `  Discrepancy:   ${discrepancy}`,
+      '',
+      'Please review the pabbly_reconciliation_log table and investigate missing orders.',
+      '',
+      '— Jamisan ERP Operations System',
+    ].join('\n'),
+  };
+
+  try {
+    await getTransporter().sendMail(mailOptions);
+    console.log(`[Email] Reconciliation alert sent for ${date}`);
+  } catch (err) {
+    console.error(`[Email] Failed to send reconciliation alert: ${err.message}`);
+  }
+}
+
+module.exports = { sendLoginAlertEmail, sendReconciliationAlertEmail };

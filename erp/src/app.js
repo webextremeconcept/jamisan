@@ -4,6 +4,7 @@ const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const { globalLimiter } = require('./middleware/rateLimiter');
 const authRoutes = require('./routes/auth');
+const webhookRoutes = require('./routes/webhook');
 
 const app = express();
 
@@ -27,6 +28,9 @@ app.get('/health', (req, res) => {
 
 // Auth routes
 app.use('/auth', authRoutes);
+
+// Webhook routes (Pabbly order ingestion + reconciliation)
+app.use('/webhook', webhookRoutes);
 
 // 404 handler
 app.use((req, res) => {
