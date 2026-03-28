@@ -1,26 +1,13 @@
 const { pool } = require('../config/db');
 const { sendReconciliationAlertEmail } = require('./emailService');
 
-// WAT = UTC+1, no DST
-const WAT_OFFSET_MS = 60 * 60 * 1000;
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-function getYesterdayWATBounds() {
-  const now = new Date();
-  const nowWAT = new Date(now.getTime() + WAT_OFFSET_MS);
-
-  const todayWATMidnightUTC = new Date(Date.UTC(
-    nowWAT.getUTCFullYear(),
-    nowWAT.getUTCMonth(),
-    nowWAT.getUTCDate()
-  ));
-
-  const todayStartUTC = new Date(todayWATMidnightUTC.getTime() - WAT_OFFSET_MS);
-  const yesterdayStartUTC = new Date(todayStartUTC.getTime() - DAY_MS);
-  const yesterdayWATMidnightUTC = new Date(todayWATMidnightUTC.getTime() - DAY_MS);
-  const reconciliationDate = yesterdayWATMidnightUTC.toISOString().slice(0, 10);
-
-  return { yesterdayStartUTC, todayStartUTC, reconciliationDate };
+function getWATDates() {
+  // Use Intl to get today's date in Africa/Lagos — delegates timezone math to the
+  // runtime instead of manual UTC offset arithmetic which breaks on DST edge cases.
+  const todayWAT = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Lagos' }).format(new Date());
+  const [y, m, d] = todayWAT.split('-').map(Number);
+  const yesterdayWAT = new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10);
+  return { yesterday: yesterdayWAT, today: todayWAT };
 }
 
 async function maybeSendAlert(date, crmCount, pabblyCount, discrepancy, currentAlertSent) {
@@ -46,15 +33,16 @@ async function logReconciliationResult(row, date, pendingMessage) {
 // serialises concurrent writes. NULL pabbly_order_count/discrepancy on INSERT
 // means "genuinely unknown", not a misleading 0.
 async function runMidnightReconciliation() {
-  const { yesterdayStartUTC, todayStartUTC, reconciliationDate } = getYesterdayWATBounds();
+  const { yesterday, today } = getWATDates();
 
+  // Let PostgreSQL convert timestamptz → Lagos date; avoids JS timezone bugs.
   const countRes = await pool.query(
     `SELECT COUNT(*)::int AS crm_order_count
        FROM orders
-      WHERE ordered_at >= $1
-        AND ordered_at  < $2
+      WHERE ordered_at AT TIME ZONE 'UTC' AT TIME ZONE 'Africa/Lagos' >= $1::date
+        AND ordered_at AT TIME ZONE 'UTC' AT TIME ZONE 'Africa/Lagos' <  $2::date
         AND api_batch_id IS NOT NULL`,
-    [yesterdayStartUTC, todayStartUTC]
+    [yesterday, today]
   );
   const crmCount = countRes.rows[0].crm_order_count;
 
@@ -66,23 +54,20 @@ async function runMidnightReconciliation() {
        SET crm_order_count = EXCLUDED.crm_order_count,
            discrepancy = CASE
              WHEN pabbly_reconciliation_log.pabbly_order_count IS NOT NULL
-             THEN EXCLUDED.crm_order_count - pabbly_reconciliation_log.pabbly_order_count
+             THEN $2 - pabbly_reconciliation_log.pabbly_order_count
              ELSE NULL
            END,
            status = CASE
-             WHEN pabbly_reconciliation_log.pabbly_order_count IS NOT NULL
-             THEN CASE
-               WHEN EXCLUDED.crm_order_count - pabbly_reconciliation_log.pabbly_order_count = 0
-               THEN 'Matched' ELSE 'Discrepancy Found'
-             END
-             ELSE 'Pending'
+             WHEN pabbly_reconciliation_log.pabbly_order_count IS NULL THEN 'Pending'
+             WHEN ($2 - pabbly_reconciliation_log.pabbly_order_count) = 0 THEN 'Matched'
+             ELSE 'Discrepancy Found'
            END
      RETURNING reconciliation_date, crm_order_count, pabbly_order_count,
                discrepancy, status, alert_sent`,
-    [reconciliationDate, crmCount]
+    [yesterday, crmCount]
   );
 
-  await logReconciliationResult(result.rows[0], reconciliationDate, `CRM: ${crmCount} written. Awaiting Pabbly count.`);
+  await logReconciliationResult(result.rows[0], yesterday, `CRM: ${crmCount} written. Awaiting Pabbly count.`);
 }
 
 // Mirror of runMidnightReconciliation — writes pabbly_order_count and
@@ -96,16 +81,13 @@ async function handlePabblyCount(date, pabblyCount) {
        SET pabbly_order_count = EXCLUDED.pabbly_order_count,
            discrepancy = CASE
              WHEN pabbly_reconciliation_log.crm_order_count IS NOT NULL
-             THEN pabbly_reconciliation_log.crm_order_count - EXCLUDED.pabbly_order_count
+             THEN pabbly_reconciliation_log.crm_order_count - $2
              ELSE NULL
            END,
            status = CASE
-             WHEN pabbly_reconciliation_log.crm_order_count IS NOT NULL
-             THEN CASE
-               WHEN pabbly_reconciliation_log.crm_order_count - EXCLUDED.pabbly_order_count = 0
-               THEN 'Matched' ELSE 'Discrepancy Found'
-             END
-             ELSE 'Pending'
+             WHEN pabbly_reconciliation_log.crm_order_count IS NULL THEN 'Pending'
+             WHEN (pabbly_reconciliation_log.crm_order_count - $2) = 0 THEN 'Matched'
+             ELSE 'Discrepancy Found'
            END
      RETURNING reconciliation_date, crm_order_count, pabbly_order_count,
                discrepancy, status, alert_sent`,

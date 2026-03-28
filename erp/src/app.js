@@ -13,8 +13,7 @@ app.set('trust proxy', 1); // Trust first proxy (Cloudflare / Nginx)
 app.use(helmet());
 app.use(cors());
 
-// Body parsing
-app.use(express.json({ limit: '1mb' }));
+// Body parsing — scoped per route group so webhook payloads are capped at 100 kb
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 
@@ -27,10 +26,10 @@ app.get('/health', (req, res) => {
 });
 
 // Auth routes
-app.use('/auth', authRoutes);
+app.use('/auth', express.json({ limit: '1mb' }), authRoutes);
 
-// Webhook routes (Pabbly order ingestion + reconciliation)
-app.use('/webhook', webhookRoutes);
+// Webhook routes (Pabbly order ingestion + reconciliation) — strict 100 kb body limit
+app.use('/webhook', express.json({ limit: '100kb' }), webhookRoutes);
 
 // 404 handler
 app.use((req, res) => {

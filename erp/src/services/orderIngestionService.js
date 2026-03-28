@@ -71,8 +71,16 @@ async function ingestOrder(payload, ipAddress) {
     }
   }
 
-  const parsedPrice = parseFloat(payload.price);
-  if (!isFinite(parsedPrice) || parsedPrice < 0) {
+  // Sanitize inputs before DB use — strip currency symbols/commas from price,
+  // trim whitespace from string fields that feed into ILIKE lookups or stored values.
+  const cleanPrice = parseFloat(String(payload.price).replace(/[^0-9.]/g, ''));
+  const customerName = String(payload.customer_name).trim();
+  const productName = payload.product_name ? String(payload.product_name).trim() : null;
+  const stateName = payload.state ? String(payload.state).trim() : null;
+  const lgaName = payload.lga ? String(payload.lga).trim() : null;
+  const address = payload.address ? String(payload.address).trim() : null;
+
+  if (!isFinite(cleanPrice) || cleanPrice < 0) {
     await logValidationFailure({ invalid_field: 'price', value: String(payload.price), api_batch_id: payload.api_batch_id }, ipAddress);
     return { error: true, message: 'price must be a non-negative number' };
   }
@@ -109,14 +117,14 @@ async function ingestOrder(payload, ipAddress) {
   let productRow = null;
   let unknownProduct = false;
 
-  if (payload.product_name) {
+  if (productName) {
     const productRes = await pool.query(
       `SELECT p.id, p.department_id, p.brand_id, b.niche_id
          FROM products p
          JOIN brands b ON b.id = p.brand_id
         WHERE p.name ILIKE $1
         LIMIT 1`,
-      [payload.product_name]
+      [productName]
     );
     if (productRes.rows.length > 0) {
       productRow = productRes.rows[0];
@@ -130,23 +138,23 @@ async function ingestOrder(payload, ipAddress) {
 
   // Geo lookups (soft fail)
   let stateId = null;
-  if (payload.state) {
+  if (stateName) {
     const stateRes = await pool.query(
       'SELECT id FROM admin_level_1 WHERE name ILIKE $1 LIMIT 1',
-      [payload.state]
+      [stateName]
     );
     if (stateRes.rows.length > 0) {
       stateId = stateRes.rows[0].id;
     } else {
-      console.warn(`[Webhook] Unknown state: "${payload.state}"`);
+      console.warn(`[Webhook] Unknown state: "${stateName}"`);
     }
   }
 
   let lgaId = null;
-  if (payload.lga && stateId) {
+  if (lgaName && stateId) {
     const lgaRes = await pool.query(
       'SELECT id FROM admin_level_2 WHERE name ILIKE $1 AND admin_level_1_id = $2 LIMIT 1',
-      [payload.lga, stateId]
+      [lgaName, stateId]
     );
     if (lgaRes.rows.length > 0) {
       lgaId = lgaRes.rows[0].id;
@@ -211,7 +219,7 @@ async function ingestOrder(payload, ipAddress) {
              total_orders    = customers.total_orders + 1,
              updated_at      = now()
        RETURNING id`,
-      [phone, payload.customer_name]
+      [phone, customerName]
     );
     resolvedCustomerId = upsertRes.rows[0].id;
 
@@ -247,8 +255,8 @@ async function ingestOrder(payload, ipAddress) {
         stateId, lgaId,
         sourceId, phone, otherPhone,
         resolvedCustomerId, isReturnCustomer, csrId,
-        payload.customer_name, parsedPrice, payload.quantity || 1,
-        payload.email || null, payload.sex || null, payload.city || null, payload.address || null,
+        customerName, cleanPrice, payload.quantity || 1,
+        payload.email || null, payload.sex || null, payload.city || null, address,
         hasOrderBump,
         payload.order_bump_product_id || null, payload.order_bump_variant_id || null,
         payload.order_bump_quantity || 0, payload.order_bump_price || 0, payload.order_bump_type || null,
@@ -260,6 +268,16 @@ async function ingestOrder(payload, ipAddress) {
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
+    // Concurrent duplicate — both requests passed the SELECT idempotency check,
+    // but the UNIQUE constraint on api_batch_id blocks the second INSERT.
+    if (err.code === '23505' && err.constraint === 'unique_api_batch_id') {
+      await logAudit(null, 'webhook_duplicate_skipped', {
+        tableName: 'orders',
+        newValue: JSON.stringify({ api_batch_id: payload.api_batch_id }),
+        ipAddress,
+      });
+      return { skipped: true };
+    }
     throw err;
   } finally {
     client.release();
