@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict uR1HXiZXcmPuaVOF5JiC5gfWIxzp2ms2PabInJ66RgF3brIgrQJPAGpo6nBGHMw
+\restrict sN6rAKr0VylUKTqL3Md82IhL9m11czf2qwU3UyAwQdDF7eoj90VHQi3A4DxS6IH
 
 -- Dumped from database version 17.9 (Ubuntu 17.9-1.pgdg24.04+1)
 -- Dumped by pg_dump version 17.9 (Ubuntu 17.9-1.pgdg24.04+1)
@@ -91,13 +91,22 @@ ALTER FUNCTION public.fn_agent_remittance_verified_cleared() OWNER TO jamisan_ad
 CREATE FUNCTION public.fn_orders_stock_management() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
+DECLARE
+  old_status text;
 BEGIN
-  IF OLD.status = NEW.status THEN
-    RETURN NEW;
+  -- On INSERT, OLD is null
+  IF TG_OP = 'INSERT' THEN
+    old_status := '';
+  ELSE
+    old_status := OLD.status;
+    -- Skip if status did not change on UPDATE
+    IF old_status = NEW.status THEN
+      RETURN NEW;
+    END IF;
   END IF;
 
   -- === RESERVE: entering Pending or Scheduled ===
-  IF NEW.status IN ('Pending', 'Scheduled') AND OLD.status NOT IN ('Pending', 'Scheduled') THEN
+  IF NEW.status IN ('Pending', 'Scheduled') AND old_status NOT IN ('Pending', 'Scheduled') THEN
     UPDATE inventory SET reserved = reserved + NEW.quantity, updated_at = now()
     WHERE product_id = NEW.product_id AND variant_id IS NOT DISTINCT FROM NEW.product_variant_id;
 
@@ -108,8 +117,8 @@ BEGIN
   END IF;
 
   -- === DECREMENT: any status -> Cash Paid ===
-  IF NEW.status = 'Cash Paid' AND OLD.status <> 'Cash Paid' THEN
-    IF OLD.status IN ('Pending', 'Scheduled') THEN
+  IF NEW.status = 'Cash Paid' AND old_status <> 'Cash Paid' THEN
+    IF old_status IN ('Pending', 'Scheduled') THEN
       -- Release reservation AND decrement
       UPDATE inventory SET reserved = reserved - NEW.quantity, decremented = decremented + NEW.quantity, updated_at = now()
       WHERE product_id = NEW.product_id AND variant_id IS NOT DISTINCT FROM NEW.product_variant_id;
@@ -121,7 +130,7 @@ BEGIN
         WHERE product_id = NEW.order_bump_product_id AND variant_id IS NOT DISTINCT FROM NEW.order_bump_variant_id;
       END IF;
     ELSE
-      -- Late Cash Paid (from Abandoned/Failed/Cancelled) -- no reservation to release
+      -- Late Cash Paid or direct INSERT as Cash Paid -- no reservation to release
       UPDATE inventory SET decremented = decremented + NEW.quantity, updated_at = now()
       WHERE product_id = NEW.product_id AND variant_id IS NOT DISTINCT FROM NEW.product_variant_id;
 
@@ -134,7 +143,7 @@ BEGIN
   END IF;
 
   -- === ROLLBACK DECREMENT: Cash Paid -> any other status ===
-  IF OLD.status = 'Cash Paid' AND NEW.status <> 'Cash Paid' THEN
+  IF old_status = 'Cash Paid' AND NEW.status <> 'Cash Paid' THEN
     UPDATE inventory SET decremented = decremented - NEW.quantity, updated_at = now()
     WHERE product_id = NEW.product_id AND variant_id IS NOT DISTINCT FROM NEW.product_variant_id;
 
@@ -146,7 +155,7 @@ BEGIN
   END IF;
 
   -- === RELEASE RESERVE: Pending/Scheduled -> Failed/Cancelled/Abandoned ===
-  IF OLD.status IN ('Pending', 'Scheduled') AND NEW.status IN ('Failed', 'Cancelled', 'Abandoned') THEN
+  IF old_status IN ('Pending', 'Scheduled') AND NEW.status IN ('Failed', 'Cancelled', 'Abandoned') THEN
     UPDATE inventory SET reserved = reserved - NEW.quantity, updated_at = now()
     WHERE product_id = NEW.product_id AND variant_id IS NOT DISTINCT FROM NEW.product_variant_id;
 
@@ -233,6 +242,22 @@ $$;
 
 
 ALTER FUNCTION public.fn_trashed_items_subtract_stock() OWNER TO jamisan_admin;
+
+--
+-- Name: update_updated_at_column(); Type: FUNCTION; Schema: public; Owner: jamisan_admin
+--
+
+CREATE FUNCTION public.update_updated_at_column() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.update_updated_at_column() OWNER TO jamisan_admin;
 
 SET default_tablespace = '';
 
@@ -4945,6 +4970,986 @@ ALTER TABLE ONLY public.weekly_reports
 
 
 --
+-- Name: idx_action_items_assigned_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_action_items_assigned_by ON public.action_items USING btree (assigned_by);
+
+
+--
+-- Name: idx_action_items_assigned_to; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_action_items_assigned_to ON public.action_items USING btree (assigned_to);
+
+
+--
+-- Name: idx_action_items_closed_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_action_items_closed_by ON public.action_items USING btree (closed_by);
+
+
+--
+-- Name: idx_ad_expenses_brand_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_ad_expenses_brand_id ON public.ad_expenses USING btree (brand_id);
+
+
+--
+-- Name: idx_ad_expenses_logged_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_ad_expenses_logged_by ON public.ad_expenses USING btree (logged_by);
+
+
+--
+-- Name: idx_ad_expenses_product_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_ad_expenses_product_id ON public.ad_expenses USING btree (product_id);
+
+
+--
+-- Name: idx_admin_level_1_country_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_admin_level_1_country_id ON public.admin_level_1 USING btree (country_id);
+
+
+--
+-- Name: idx_admin_level_2_admin_level_1_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_admin_level_2_admin_level_1_id ON public.admin_level_2 USING btree (admin_level_1_id);
+
+
+--
+-- Name: idx_agent_ledger_agent_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_agent_ledger_agent_id ON public.agent_ledger USING btree (agent_id);
+
+
+--
+-- Name: idx_agent_ledger_logged_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_agent_ledger_logged_by ON public.agent_ledger USING btree (logged_by);
+
+
+--
+-- Name: idx_agent_remittance_admin_level_1_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_agent_remittance_admin_level_1_id ON public.agent_remittance USING btree (admin_level_1_id);
+
+
+--
+-- Name: idx_agent_remittance_agent_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_agent_remittance_agent_id ON public.agent_remittance USING btree (agent_id);
+
+
+--
+-- Name: idx_agent_remittance_logged_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_agent_remittance_logged_by ON public.agent_remittance USING btree (logged_by);
+
+
+--
+-- Name: idx_agent_remittance_status; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_agent_remittance_status ON public.agent_remittance USING btree (status);
+
+
+--
+-- Name: idx_agent_remittance_variance_reason_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_agent_remittance_variance_reason_id ON public.agent_remittance USING btree (variance_reason_id);
+
+
+--
+-- Name: idx_agent_zone_assignments_admin_level_1_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_agent_zone_assignments_admin_level_1_id ON public.agent_zone_assignments USING btree (admin_level_1_id);
+
+
+--
+-- Name: idx_agent_zone_assignments_admin_level_2_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_agent_zone_assignments_admin_level_2_id ON public.agent_zone_assignments USING btree (admin_level_2_id);
+
+
+--
+-- Name: idx_agent_zone_assignments_overflow_agent_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_agent_zone_assignments_overflow_agent_id ON public.agent_zone_assignments USING btree (overflow_agent_id);
+
+
+--
+-- Name: idx_agent_zone_assignments_primary_agent_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_agent_zone_assignments_primary_agent_id ON public.agent_zone_assignments USING btree (primary_agent_id);
+
+
+--
+-- Name: idx_agents_admin_level_1_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_agents_admin_level_1_id ON public.agents USING btree (admin_level_1_id);
+
+
+--
+-- Name: idx_agents_admin_level_2_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_agents_admin_level_2_id ON public.agents USING btree (admin_level_2_id);
+
+
+--
+-- Name: idx_audit_log_created_at; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_audit_log_created_at ON public.audit_log USING btree (created_at);
+
+
+--
+-- Name: idx_audit_log_user_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_audit_log_user_id ON public.audit_log USING btree (user_id);
+
+
+--
+-- Name: idx_auditor_spot_checks_auditor_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_auditor_spot_checks_auditor_id ON public.auditor_spot_checks USING btree (auditor_id);
+
+
+--
+-- Name: idx_auditor_spot_checks_check_category_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_auditor_spot_checks_check_category_id ON public.auditor_spot_checks USING btree (check_category_id);
+
+
+--
+-- Name: idx_auditor_spot_checks_order_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_auditor_spot_checks_order_id ON public.auditor_spot_checks USING btree (order_id);
+
+
+--
+-- Name: idx_brands_department_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_brands_department_id ON public.brands USING btree (department_id);
+
+
+--
+-- Name: idx_brands_niche_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_brands_niche_id ON public.brands USING btree (niche_id);
+
+
+--
+-- Name: idx_commission_tiers_department_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_commission_tiers_department_id ON public.commission_tiers USING btree (department_id);
+
+
+--
+-- Name: idx_complaints_assigned_csr_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_complaints_assigned_csr_id ON public.complaints USING btree (assigned_csr_id);
+
+
+--
+-- Name: idx_complaints_customer_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_complaints_customer_id ON public.complaints USING btree (customer_id);
+
+
+--
+-- Name: idx_complaints_order_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_complaints_order_id ON public.complaints USING btree (order_id);
+
+
+--
+-- Name: idx_complaints_resolved_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_complaints_resolved_by ON public.complaints USING btree (resolved_by);
+
+
+--
+-- Name: idx_csr_level_history_changed_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_csr_level_history_changed_by ON public.csr_level_history USING btree (changed_by);
+
+
+--
+-- Name: idx_csr_level_history_user_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_csr_level_history_user_id ON public.csr_level_history USING btree (user_id);
+
+
+--
+-- Name: idx_csr_performance_monthly_commission_tier_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_csr_performance_monthly_commission_tier_id ON public.csr_performance_monthly USING btree (commission_tier_id);
+
+
+--
+-- Name: idx_csr_performance_monthly_department_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_csr_performance_monthly_department_id ON public.csr_performance_monthly USING btree (department_id);
+
+
+--
+-- Name: idx_csr_performance_monthly_user_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_csr_performance_monthly_user_id ON public.csr_performance_monthly USING btree (user_id);
+
+
+--
+-- Name: idx_csr_promotion_thresholds_department_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_csr_promotion_thresholds_department_id ON public.csr_promotion_thresholds USING btree (department_id);
+
+
+--
+-- Name: idx_customers_banned_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_customers_banned_by ON public.customers USING btree (banned_by);
+
+
+--
+-- Name: idx_department_targets_department_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_department_targets_department_id ON public.department_targets USING btree (department_id);
+
+
+--
+-- Name: idx_department_targets_set_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_department_targets_set_by ON public.department_targets USING btree (set_by);
+
+
+--
+-- Name: idx_escalation_reason_codes_created_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_escalation_reason_codes_created_by ON public.escalation_reason_codes USING btree (created_by);
+
+
+--
+-- Name: idx_expenses_admin_level_1_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_expenses_admin_level_1_id ON public.expenses USING btree (admin_level_1_id);
+
+
+--
+-- Name: idx_expenses_agent_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_expenses_agent_id ON public.expenses USING btree (agent_id);
+
+
+--
+-- Name: idx_expenses_expense_category_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_expenses_expense_category_id ON public.expenses USING btree (expense_category_id);
+
+
+--
+-- Name: idx_expenses_logged_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_expenses_logged_by ON public.expenses USING btree (logged_by);
+
+
+--
+-- Name: idx_expenses_product_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_expenses_product_id ON public.expenses USING btree (product_id);
+
+
+--
+-- Name: idx_goods_movement_admin_level_1_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_goods_movement_admin_level_1_id ON public.goods_movement USING btree (admin_level_1_id);
+
+
+--
+-- Name: idx_goods_movement_from_agent_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_goods_movement_from_agent_id ON public.goods_movement USING btree (from_agent_id);
+
+
+--
+-- Name: idx_goods_movement_logged_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_goods_movement_logged_by ON public.goods_movement USING btree (logged_by);
+
+
+--
+-- Name: idx_goods_movement_product_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_goods_movement_product_id ON public.goods_movement USING btree (product_id);
+
+
+--
+-- Name: idx_goods_movement_shipping_type_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_goods_movement_shipping_type_id ON public.goods_movement USING btree (shipping_type_id);
+
+
+--
+-- Name: idx_goods_movement_to_agent_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_goods_movement_to_agent_id ON public.goods_movement USING btree (to_agent_id);
+
+
+--
+-- Name: idx_goods_movement_variant_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_goods_movement_variant_id ON public.goods_movement USING btree (variant_id);
+
+
+--
+-- Name: idx_inventory_product_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_inventory_product_id ON public.inventory USING btree (product_id);
+
+
+--
+-- Name: idx_inventory_product_variant; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_inventory_product_variant ON public.inventory USING btree (product_id, variant_id);
+
+
+--
+-- Name: idx_inventory_variant_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_inventory_variant_id ON public.inventory USING btree (variant_id);
+
+
+--
+-- Name: idx_investment_inflow_logged_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_investment_inflow_logged_by ON public.investment_inflow USING btree (logged_by);
+
+
+--
+-- Name: idx_lesson_categories_created_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_lesson_categories_created_by ON public.lesson_categories USING btree (created_by);
+
+
+--
+-- Name: idx_lessons_learned_category_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_lessons_learned_category_id ON public.lessons_learned USING btree (category_id);
+
+
+--
+-- Name: idx_lessons_learned_reviewed_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_lessons_learned_reviewed_by ON public.lessons_learned USING btree (reviewed_by);
+
+
+--
+-- Name: idx_lessons_learned_submitted_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_lessons_learned_submitted_by ON public.lessons_learned USING btree (submitted_by);
+
+
+--
+-- Name: idx_loans_logged_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_loans_logged_by ON public.loans USING btree (logged_by);
+
+
+--
+-- Name: idx_notifications_recipient_agent_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_notifications_recipient_agent_id ON public.notifications USING btree (recipient_agent_id);
+
+
+--
+-- Name: idx_notifications_recipient_user_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_notifications_recipient_user_id ON public.notifications USING btree (recipient_user_id);
+
+
+--
+-- Name: idx_notifications_status; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_notifications_status ON public.notifications USING btree (status);
+
+
+--
+-- Name: idx_order_bump_inventory_product_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_order_bump_inventory_product_id ON public.order_bump_inventory USING btree (product_id);
+
+
+--
+-- Name: idx_order_bump_inventory_product_variant; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_order_bump_inventory_product_variant ON public.order_bump_inventory USING btree (product_id, variant_id);
+
+
+--
+-- Name: idx_order_bump_inventory_variant_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_order_bump_inventory_variant_id ON public.order_bump_inventory USING btree (variant_id);
+
+
+--
+-- Name: idx_order_escalations_order_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_order_escalations_order_id ON public.order_escalations USING btree (order_id);
+
+
+--
+-- Name: idx_order_escalations_raised_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_order_escalations_raised_by ON public.order_escalations USING btree (raised_by);
+
+
+--
+-- Name: idx_order_escalations_reason_code_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_order_escalations_reason_code_id ON public.order_escalations USING btree (reason_code_id);
+
+
+--
+-- Name: idx_order_escalations_resolved_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_order_escalations_resolved_by ON public.order_escalations USING btree (resolved_by);
+
+
+--
+-- Name: idx_order_status_history_changed_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_order_status_history_changed_by ON public.order_status_history USING btree (changed_by);
+
+
+--
+-- Name: idx_order_status_history_order_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_order_status_history_order_id ON public.order_status_history USING btree (order_id);
+
+
+--
+-- Name: idx_orders_admin_level_1_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_admin_level_1_id ON public.orders USING btree (admin_level_1_id);
+
+
+--
+-- Name: idx_orders_admin_level_2_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_admin_level_2_id ON public.orders USING btree (admin_level_2_id);
+
+
+--
+-- Name: idx_orders_agent_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_agent_id ON public.orders USING btree (agent_id);
+
+
+--
+-- Name: idx_orders_assigned_csr_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_assigned_csr_id ON public.orders USING btree (assigned_csr_id);
+
+
+--
+-- Name: idx_orders_assigned_csr_status; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_assigned_csr_status ON public.orders USING btree (assigned_csr_id, status);
+
+
+--
+-- Name: idx_orders_brand_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_brand_id ON public.orders USING btree (brand_id);
+
+
+--
+-- Name: idx_orders_country_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_country_id ON public.orders USING btree (country_id);
+
+
+--
+-- Name: idx_orders_created_at; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_created_at ON public.orders USING btree (created_at);
+
+
+--
+-- Name: idx_orders_customer_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_customer_id ON public.orders USING btree (customer_id);
+
+
+--
+-- Name: idx_orders_department_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_department_id ON public.orders USING btree (department_id);
+
+
+--
+-- Name: idx_orders_failure_reason_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_failure_reason_id ON public.orders USING btree (failure_reason_id);
+
+
+--
+-- Name: idx_orders_niche_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_niche_id ON public.orders USING btree (niche_id);
+
+
+--
+-- Name: idx_orders_order_bump_product_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_order_bump_product_id ON public.orders USING btree (order_bump_product_id);
+
+
+--
+-- Name: idx_orders_order_bump_variant_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_order_bump_variant_id ON public.orders USING btree (order_bump_variant_id);
+
+
+--
+-- Name: idx_orders_phone_number; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_phone_number ON public.orders USING btree (phone_number);
+
+
+--
+-- Name: idx_orders_product_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_product_id ON public.orders USING btree (product_id);
+
+
+--
+-- Name: idx_orders_product_variant_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_product_variant_id ON public.orders USING btree (product_variant_id);
+
+
+--
+-- Name: idx_orders_shipping_type_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_shipping_type_id ON public.orders USING btree (shipping_type_id);
+
+
+--
+-- Name: idx_orders_source_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_source_id ON public.orders USING btree (source_id);
+
+
+--
+-- Name: idx_orders_status; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_status ON public.orders USING btree (status);
+
+
+--
+-- Name: idx_orders_status_department; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_orders_status_department ON public.orders USING btree (status, department_id);
+
+
+--
+-- Name: idx_pabbly_reconciliation_log_reviewed_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_pabbly_reconciliation_log_reviewed_by ON public.pabbly_reconciliation_log USING btree (reviewed_by);
+
+
+--
+-- Name: idx_payroll_director_approved_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_payroll_director_approved_by ON public.payroll USING btree (director_approved_by);
+
+
+--
+-- Name: idx_payroll_logged_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_payroll_logged_by ON public.payroll USING btree (logged_by);
+
+
+--
+-- Name: idx_payroll_user_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_payroll_user_id ON public.payroll USING btree (user_id);
+
+
+--
+-- Name: idx_procurement_expenses_logged_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_procurement_expenses_logged_by ON public.procurement_expenses USING btree (logged_by);
+
+
+--
+-- Name: idx_procurement_expenses_niche_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_procurement_expenses_niche_id ON public.procurement_expenses USING btree (niche_id);
+
+
+--
+-- Name: idx_procurement_expenses_product_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_procurement_expenses_product_id ON public.procurement_expenses USING btree (product_id);
+
+
+--
+-- Name: idx_procurement_expenses_vendor_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_procurement_expenses_vendor_id ON public.procurement_expenses USING btree (vendor_id);
+
+
+--
+-- Name: idx_product_variants_product_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_product_variants_product_id ON public.product_variants USING btree (product_id);
+
+
+--
+-- Name: idx_products_brand_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_products_brand_id ON public.products USING btree (brand_id);
+
+
+--
+-- Name: idx_products_department_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_products_department_id ON public.products USING btree (department_id);
+
+
+--
+-- Name: idx_session_log_last_active_at; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_session_log_last_active_at ON public.session_log USING btree (last_active_at);
+
+
+--
+-- Name: idx_session_log_user_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_session_log_user_id ON public.session_log USING btree (user_id);
+
+
+--
+-- Name: idx_stock_adjustments_approved_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_stock_adjustments_approved_by ON public.stock_adjustments USING btree (approved_by);
+
+
+--
+-- Name: idx_stock_adjustments_logged_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_stock_adjustments_logged_by ON public.stock_adjustments USING btree (logged_by);
+
+
+--
+-- Name: idx_stock_adjustments_product_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_stock_adjustments_product_id ON public.stock_adjustments USING btree (product_id);
+
+
+--
+-- Name: idx_stock_adjustments_variant_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_stock_adjustments_variant_id ON public.stock_adjustments USING btree (variant_id);
+
+
+--
+-- Name: idx_taxes_logged_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_taxes_logged_by ON public.taxes USING btree (logged_by);
+
+
+--
+-- Name: idx_trashed_items_admin_level_1_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_trashed_items_admin_level_1_id ON public.trashed_items USING btree (admin_level_1_id);
+
+
+--
+-- Name: idx_trashed_items_agent_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_trashed_items_agent_id ON public.trashed_items USING btree (agent_id);
+
+
+--
+-- Name: idx_trashed_items_logged_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_trashed_items_logged_by ON public.trashed_items USING btree (logged_by);
+
+
+--
+-- Name: idx_trashed_items_product_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_trashed_items_product_id ON public.trashed_items USING btree (product_id);
+
+
+--
+-- Name: idx_trashed_items_variant_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_trashed_items_variant_id ON public.trashed_items USING btree (variant_id);
+
+
+--
+-- Name: idx_user_departments_department_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_user_departments_department_id ON public.user_departments USING btree (department_id);
+
+
+--
+-- Name: idx_user_departments_user_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_user_departments_user_id ON public.user_departments USING btree (user_id);
+
+
+--
+-- Name: idx_users_created_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_users_created_by ON public.users USING btree (created_by);
+
+
+--
+-- Name: idx_users_role_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_users_role_id ON public.users USING btree (role_id);
+
+
+--
+-- Name: idx_vendors_admin_level_1_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_vendors_admin_level_1_id ON public.vendors USING btree (admin_level_1_id);
+
+
+--
+-- Name: idx_vendors_admin_level_2_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_vendors_admin_level_2_id ON public.vendors USING btree (admin_level_2_id);
+
+
+--
+-- Name: idx_vendors_country_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_vendors_country_id ON public.vendors USING btree (country_id);
+
+
+--
+-- Name: idx_wati_export_queue_order_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_wati_export_queue_order_id ON public.wati_export_queue USING btree (order_id);
+
+
+--
+-- Name: idx_wati_export_queue_status; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_wati_export_queue_status ON public.wati_export_queue USING btree (status);
+
+
+--
+-- Name: idx_waybill_expenses_agent_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_waybill_expenses_agent_id ON public.waybill_expenses USING btree (agent_id);
+
+
+--
+-- Name: idx_waybill_expenses_from_admin_level_1_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_waybill_expenses_from_admin_level_1_id ON public.waybill_expenses USING btree (from_admin_level_1_id);
+
+
+--
+-- Name: idx_waybill_expenses_logged_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_waybill_expenses_logged_by ON public.waybill_expenses USING btree (logged_by);
+
+
+--
+-- Name: idx_waybill_expenses_product_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_waybill_expenses_product_id ON public.waybill_expenses USING btree (product_id);
+
+
+--
+-- Name: idx_waybill_expenses_to_admin_level_1_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_waybill_expenses_to_admin_level_1_id ON public.waybill_expenses USING btree (to_admin_level_1_id);
+
+
+--
+-- Name: idx_waybill_expenses_variant_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_waybill_expenses_variant_id ON public.waybill_expenses USING btree (variant_id);
+
+
+--
+-- Name: idx_weekly_bonus_log_paid_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_weekly_bonus_log_paid_by ON public.weekly_bonus_log USING btree (paid_by);
+
+
+--
+-- Name: idx_weekly_bonus_log_user_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_weekly_bonus_log_user_id ON public.weekly_bonus_log USING btree (user_id);
+
+
+--
+-- Name: idx_weekly_reports_csr_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_weekly_reports_csr_id ON public.weekly_reports USING btree (csr_id);
+
+
+--
+-- Name: idx_weekly_reports_department_id; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_weekly_reports_department_id ON public.weekly_reports USING btree (department_id);
+
+
+--
+-- Name: idx_weekly_reports_generated_by; Type: INDEX; Schema: public; Owner: jamisan_admin
+--
+
+CREATE INDEX idx_weekly_reports_generated_by ON public.weekly_reports USING btree (generated_by);
+
+
+--
 -- Name: audit_log prevent_audit_delete; Type: RULE; Schema: public; Owner: jamisan_admin
 --
 
@@ -4958,6 +5963,118 @@ CREATE RULE prevent_audit_delete AS
 
 CREATE RULE prevent_audit_update AS
     ON UPDATE TO public.audit_log DO INSTEAD NOTHING;
+
+
+--
+-- Name: action_items set_updated_at; Type: TRIGGER; Schema: public; Owner: jamisan_admin
+--
+
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON public.action_items FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: agent_zone_assignments set_updated_at; Type: TRIGGER; Schema: public; Owner: jamisan_admin
+--
+
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON public.agent_zone_assignments FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: agents set_updated_at; Type: TRIGGER; Schema: public; Owner: jamisan_admin
+--
+
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON public.agents FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: complaints set_updated_at; Type: TRIGGER; Schema: public; Owner: jamisan_admin
+--
+
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON public.complaints FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: csr_performance_monthly set_updated_at; Type: TRIGGER; Schema: public; Owner: jamisan_admin
+--
+
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON public.csr_performance_monthly FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: customers set_updated_at; Type: TRIGGER; Schema: public; Owner: jamisan_admin
+--
+
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON public.customers FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: employee_profiles set_updated_at; Type: TRIGGER; Schema: public; Owner: jamisan_admin
+--
+
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON public.employee_profiles FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: inventory set_updated_at; Type: TRIGGER; Schema: public; Owner: jamisan_admin
+--
+
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON public.inventory FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: lessons_learned set_updated_at; Type: TRIGGER; Schema: public; Owner: jamisan_admin
+--
+
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON public.lessons_learned FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: loans set_updated_at; Type: TRIGGER; Schema: public; Owner: jamisan_admin
+--
+
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON public.loans FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: order_bump_inventory set_updated_at; Type: TRIGGER; Schema: public; Owner: jamisan_admin
+--
+
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON public.order_bump_inventory FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: order_id_counter set_updated_at; Type: TRIGGER; Schema: public; Owner: jamisan_admin
+--
+
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON public.order_id_counter FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: orders set_updated_at; Type: TRIGGER; Schema: public; Owner: jamisan_admin
+--
+
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON public.orders FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: products set_updated_at; Type: TRIGGER; Schema: public; Owner: jamisan_admin
+--
+
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON public.products FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: users set_updated_at; Type: TRIGGER; Schema: public; Owner: jamisan_admin
+--
+
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: vendors set_updated_at; Type: TRIGGER; Schema: public; Owner: jamisan_admin
+--
+
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON public.vendors FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
 --
@@ -4978,7 +6095,7 @@ CREATE TRIGGER trg_agent_remittance_verified_cleared AFTER UPDATE OF status ON p
 -- Name: orders trg_orders_stock_management; Type: TRIGGER; Schema: public; Owner: jamisan_admin
 --
 
-CREATE TRIGGER trg_orders_stock_management AFTER UPDATE OF status ON public.orders FOR EACH ROW EXECUTE FUNCTION public.fn_orders_stock_management();
+CREATE TRIGGER trg_orders_stock_management AFTER INSERT OR UPDATE OF status ON public.orders FOR EACH ROW EXECUTE FUNCTION public.fn_orders_stock_management();
 
 
 --
@@ -6038,5 +7155,5 @@ ALTER TABLE ONLY public.weekly_reports
 -- PostgreSQL database dump complete
 --
 
-\unrestrict uR1HXiZXcmPuaVOF5JiC5gfWIxzp2ms2PabInJ66RgF3brIgrQJPAGpo6nBGHMw
+\unrestrict sN6rAKr0VylUKTqL3Md82IhL9m11czf2qwU3UyAwQdDF7eoj90VHQi3A4DxS6IH
 
