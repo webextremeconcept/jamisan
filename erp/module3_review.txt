@@ -1,0 +1,561 @@
+=== FILE: src/middleware/webhookAuthMiddleware.js ===
+const crypto = require('crypto');
+const { logAudit } = require('../utils/auditLogger');
+
+// Fixed key used only to produce equal-length digests for timingSafeEqual.
+// The secrecy of the comparison is provided by PABBLY_WEBHOOK_SECRET, not this key.
+const HMAC_COMPARE_KEY = 'jamisan-webhook-compare';
+
+async function webhookAuthMiddleware(req, res, next) {
+  const authHeader = req.headers['authorization'] || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  const secret = process.env.PABBLY_WEBHOOK_SECRET || '';
+
+  // HMAC both values so timingSafeEqual always compares 32-byte digests —
+  // no length pre-check needed, and secret length is not leaked to callers.
+  const tokenMac  = crypto.createHmac('sha256', HMAC_COMPARE_KEY).update(token).digest();
+  const secretMac = crypto.createHmac('sha256', HMAC_COMPARE_KEY).update(secret).digest();
+  const authorized = crypto.timingSafeEqual(tokenMac, secretMac);
+
+  if (!authorized) {
+    await logAudit(null, 'webhook_auth_failed', {
+      ipAddress: req.ip || null,
+      newValue: JSON.stringify({ path: req.path }),
+    });
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  next();
+}
+
+module.exports = webhookAuthMiddleware;
+
+=== FILE: src/controllers/pabblyWebhookController.js ===
+const { ingestOrder } = require('../services/orderIngestionService');
+const { logAudit } = require('../utils/auditLogger');
+
+async function handlePabblyWebhook(req, res) {
+  // Always respond 200 on any processing error — Pabbly must not retry on our failures.
+  // The only non-200 path is webhookAuthMiddleware returning 401.
+  try {
+    const ipAddress = req.ip || null;
+    const result = await ingestOrder(req.body, ipAddress);
+    return res.status(200).json(result);
+  } catch (err) {
+    console.error('[Webhook] Unhandled error in order ingestion:', err.message, err.stack);
+    await logAudit(null, 'webhook_processing_error', {
+      tableName: 'orders',
+      newValue: JSON.stringify({
+        error: err.message,
+        api_batch_id: req.body?.api_batch_id || null,
+      }),
+      ipAddress: req.ip || null,
+    });
+    return res.status(200).json({ error: true, message: 'Processing error — order not created' });
+  }
+}
+
+module.exports = { handlePabblyWebhook };
+
+=== FILE: src/controllers/pabblyReconcileController.js ===
+const { handlePabblyCount } = require('../services/reconciliationService');
+
+async function handlePabblyReconcile(req, res) {
+  try {
+    const { date, count } = req.body;
+
+    if (!date || count === undefined || count === null) {
+      return res.status(200).json({ error: true, message: 'Missing required fields: date, count' });
+    }
+
+    // Validate date format YYYY-MM-DD
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(200).json({ error: true, message: 'date must be in YYYY-MM-DD format' });
+    }
+
+    // Reject future dates and dates more than 7 days in the past
+    const d = new Date(date);
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    if (d > new Date() || d < sevenDaysAgo) {
+      return res.status(200).json({ error: true, message: 'date must be within the last 7 days and not in the future' });
+    }
+
+    const parsedCount = parseInt(count, 10);
+    if (isNaN(parsedCount) || parsedCount < 0) {
+      return res.status(200).json({ error: true, message: 'count must be a non-negative integer' });
+    }
+
+    await handlePabblyCount(date, parsedCount);
+    return res.status(200).json({ received: true });
+  } catch (err) {
+    console.error('[Reconcile] Unhandled error:', err.message, err.stack);
+    return res.status(200).json({ error: true, message: 'Processing error' });
+  }
+}
+
+module.exports = { handlePabblyReconcile };
+
+=== FILE: src/services/orderIngestionService.js ===
+const { pool } = require('../config/db');
+const { parsePhoneNumber } = require('libphonenumber-js');
+const { logAudit } = require('../utils/auditLogger');
+
+const CACHE_TTL_MS = 60 * 60 * 1000;
+
+let orderSourcesCache = null;
+let orderSourcesCacheTime = 0;
+let otherSourceId = null;
+
+async function getOrderSources() {
+  if (!orderSourcesCache || Date.now() - orderSourcesCacheTime > CACHE_TTL_MS) {
+    const res = await pool.query('SELECT id, name FROM order_sources WHERE is_active = true');
+    orderSourcesCache = res.rows;
+    orderSourcesCacheTime = Date.now();
+    const other = orderSourcesCache.find((s) => s.name.toLowerCase() === 'other');
+    otherSourceId = other ? other.id : null;
+  }
+  return orderSourcesCache;
+}
+
+let miscProductCache = null;
+let miscProductCacheTime = 0;
+
+async function getMiscProduct() {
+  if (!miscProductCache || Date.now() - miscProductCacheTime > CACHE_TTL_MS) {
+    const res = await pool.query(
+      `SELECT p.id, p.department_id, p.brand_id, b.niche_id
+         FROM products p
+         JOIN brands b ON b.id = p.brand_id
+        WHERE p.name = 'Miscellaneous'
+          AND p.is_active = true
+          AND b.is_active = true
+        LIMIT 1`
+    );
+    if (res.rows.length === 0) {
+      throw new Error('Miscellaneous fallback product not found or inactive — run Migration 006');
+    }
+    miscProductCache = res.rows[0];
+    miscProductCacheTime = Date.now();
+  }
+  return miscProductCache;
+}
+
+function normalisePhone(raw) {
+  try {
+    const parsed = parsePhoneNumber(String(raw), 'NG');
+    if (parsed.isValid()) return parsed.number; // E.164: +234XXXXXXXXXX
+  } catch {
+    // fall through
+  }
+  console.warn(`[Webhook] Could not normalise phone "${raw}" — storing raw`);
+  return String(raw);
+}
+
+async function logValidationFailure(details, ipAddress) {
+  await logAudit(null, 'webhook_validation_failed', {
+    tableName: 'orders',
+    newValue: JSON.stringify(details),
+    ipAddress,
+  });
+}
+
+async function ingestOrder(payload, ipAddress) {
+  const required = ['api_batch_id', 'customer_name', 'phone_number', 'assigned_csr_id', 'price'];
+  for (const field of required) {
+    const val = payload[field];
+    if (val === undefined || val === null || val === '') {
+      await logValidationFailure({ missing_field: field, api_batch_id: payload.api_batch_id || null }, ipAddress);
+      return { error: true, message: `Missing required field: ${field}` };
+    }
+  }
+
+  const parsedPrice = parseFloat(payload.price);
+  if (!isFinite(parsedPrice) || parsedPrice < 0) {
+    await logValidationFailure({ invalid_field: 'price', value: String(payload.price), api_batch_id: payload.api_batch_id }, ipAddress);
+    return { error: true, message: 'price must be a non-negative number' };
+  }
+
+  const csrId = parseInt(payload.assigned_csr_id, 10);
+  if (!isFinite(csrId)) {
+    await logValidationFailure({ invalid_field: 'assigned_csr_id', api_batch_id: payload.api_batch_id }, ipAddress);
+    return { error: true, message: 'Invalid assigned_csr_id' };
+  }
+  const csrCheck = await pool.query(
+    'SELECT id FROM users WHERE id = $1 AND is_active = true',
+    [csrId]
+  );
+  if (csrCheck.rows.length === 0) {
+    await logValidationFailure({ invalid_field: 'assigned_csr_id', value: csrId, api_batch_id: payload.api_batch_id }, ipAddress);
+    return { error: true, message: 'Invalid assigned_csr_id' };
+  }
+
+  // Idempotency check
+  const dupCheck = await pool.query(
+    'SELECT id FROM orders WHERE api_batch_id = $1',
+    [payload.api_batch_id]
+  );
+  if (dupCheck.rows.length > 0) {
+    await logAudit(null, 'webhook_duplicate_skipped', {
+      tableName: 'orders',
+      newValue: JSON.stringify({ api_batch_id: payload.api_batch_id }),
+      ipAddress,
+    });
+    return { skipped: true };
+  }
+
+  // Product lookup — inherit department_id, brand_id, niche_id
+  let productRow = null;
+  let unknownProduct = false;
+
+  if (payload.product_name) {
+    const productRes = await pool.query(
+      `SELECT p.id, p.department_id, p.brand_id, b.niche_id
+         FROM products p
+         JOIN brands b ON b.id = p.brand_id
+        WHERE p.name ILIKE $1
+        LIMIT 1`,
+      [payload.product_name]
+    );
+    if (productRes.rows.length > 0) {
+      productRow = productRes.rows[0];
+    }
+  }
+
+  if (!productRow) {
+    productRow = await getMiscProduct();
+    unknownProduct = true;
+  }
+
+  // Geo lookups (soft fail)
+  let stateId = null;
+  if (payload.state) {
+    const stateRes = await pool.query(
+      'SELECT id FROM admin_level_1 WHERE name ILIKE $1 LIMIT 1',
+      [payload.state]
+    );
+    if (stateRes.rows.length > 0) {
+      stateId = stateRes.rows[0].id;
+    } else {
+      console.warn(`[Webhook] Unknown state: "${payload.state}"`);
+    }
+  }
+
+  let lgaId = null;
+  if (payload.lga && stateId) {
+    const lgaRes = await pool.query(
+      'SELECT id FROM admin_level_2 WHERE name ILIKE $1 AND admin_level_1_id = $2 LIMIT 1',
+      [payload.lga, stateId]
+    );
+    if (lgaRes.rows.length > 0) {
+      lgaId = lgaRes.rows[0].id;
+    }
+  }
+
+  // Source lookup (soft fail to 'Other')
+  const sources = await getOrderSources();
+  let sourceId = otherSourceId;
+  let unknownSource = false;
+
+  if (payload.order_source) {
+    const match = sources.find(
+      (s) => s.name.toLowerCase() === payload.order_source.toLowerCase()
+    );
+    if (match) {
+      sourceId = match.id;
+    } else {
+      unknownSource = true;
+    }
+  }
+
+  const phone = normalisePhone(payload.phone_number);
+  const otherPhone = payload.other_phone ? normalisePhone(payload.other_phone) : null;
+
+  const hasOrderBump = payload.has_order_bump === true || payload.has_order_bump === 'true';
+  if (hasOrderBump && !payload.order_bump_product_id) {
+    await logAudit(null, 'webhook_order_bump_data_incomplete', {
+      tableName: 'orders',
+      newValue: JSON.stringify({ api_batch_id: payload.api_batch_id }),
+      ipAddress,
+    });
+  }
+
+  // Pre-transaction ban check (customer UPSERT happens inside the transaction)
+  const preTxCustomer = await pool.query(
+    'SELECT id, is_banned FROM customers WHERE phone_number = $1',
+    [phone]
+  );
+  const existingCustomer = preTxCustomer.rows[0] || null;
+  const isReturnCustomer = !!existingCustomer;
+  const isBanned = existingCustomer ? existingCustomer.is_banned : false;
+  const orderStatus = isBanned ? 'Banned' : 'Interested';
+
+  // Transaction: UPSERT customer FIRST, then INSERT order with the resolved customer_id
+  const client = await pool.connect();
+  let orderRowId;
+  let orderId;
+  let resolvedCustomerId;
+
+  try {
+    await client.query('BEGIN');
+
+    const seqRes = await client.query("SELECT nextval('cjam_order_seq') AS n");
+    orderId = `CJAM${seqRes.rows[0].n}`;
+
+    const upsertRes = await client.query(
+      `INSERT INTO customers (phone_number, full_name, first_order_date, last_order_date, total_orders)
+       VALUES ($1, $2, now(), now(), 1)
+       ON CONFLICT (phone_number) DO UPDATE
+         SET last_order_date = now(),
+             total_orders    = customers.total_orders + 1,
+             updated_at      = now()
+       RETURNING id`,
+      [phone, payload.customer_name]
+    );
+    resolvedCustomerId = upsertRes.rows[0].id;
+
+    const insertRes = await client.query(
+      `INSERT INTO orders (
+        order_id, ordered_at, status,
+        product_id, department_id, brand_id, niche_id,
+        admin_level_1_id, admin_level_2_id,
+        source_id, phone_number, other_phone,
+        customer_id, is_return_customer, assigned_csr_id,
+        customer_name, price, quantity,
+        email, sex, city, full_address,
+        has_order_bump,
+        order_bump_product_id, order_bump_variant_id,
+        order_bump_quantity, order_bump_price, order_bump_type,
+        product_variant_id, api_batch_id
+      ) VALUES (
+        $1,  now(), $2,
+        $3,  $4,    $5,  $6,
+        $7,  $8,
+        $9,  $10,   $11,
+        $12, $13,   $14,
+        $15, $16,   $17,
+        $18, $19,   $20, $21,
+        $22,
+        $23, $24,
+        $25, $26,   $27,
+        $28, $29
+      ) RETURNING id`,
+      [
+        orderId, orderStatus,
+        productRow.id, productRow.department_id, productRow.brand_id, productRow.niche_id,
+        stateId, lgaId,
+        sourceId, phone, otherPhone,
+        resolvedCustomerId, isReturnCustomer, csrId,
+        payload.customer_name, parsedPrice, payload.quantity || 1,
+        payload.email || null, payload.sex || null, payload.city || null, payload.address || null,
+        hasOrderBump,
+        payload.order_bump_product_id || null, payload.order_bump_variant_id || null,
+        payload.order_bump_quantity || 0, payload.order_bump_price || 0, payload.order_bump_type || null,
+        payload.product_variant_id || null, payload.api_batch_id,
+      ]
+    );
+    orderRowId = insertRes.rows[0].id;
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  // Post-commit audit entries
+  if (unknownSource) {
+    await logAudit(null, 'unknown_source_mapped', {
+      tableName: 'orders',
+      recordId: orderRowId,
+      newValue: JSON.stringify({ order_source: payload.order_source }),
+      ipAddress,
+    });
+  }
+
+  if (unknownProduct) {
+    await logAudit(null, 'unknown_product_mapped', {
+      tableName: 'orders',
+      recordId: orderRowId,
+      newValue: JSON.stringify({ product_name: payload.product_name || null }),
+      ipAddress,
+    });
+  }
+
+  if (isBanned) {
+    await logAudit(null, 'banned_customer_blocked', {
+      tableName: 'orders',
+      recordId: orderRowId,
+      newValue: JSON.stringify({ order_id: orderId, customer_id: resolvedCustomerId }),
+      ipAddress,
+    });
+  }
+
+  await logAudit(null, 'order_created', {
+    tableName: 'orders',
+    recordId: orderRowId,
+    newValue: JSON.stringify({ order_id: orderId, status: orderStatus, is_return_customer: isReturnCustomer }),
+    ipAddress,
+  });
+
+  return {
+    order_id: orderId,
+    status: orderStatus,
+    is_return_customer: isReturnCustomer,
+    customer_id: resolvedCustomerId,
+  };
+}
+
+module.exports = { ingestOrder };
+
+=== FILE: src/services/reconciliationService.js ===
+const { pool } = require('../config/db');
+const { sendReconciliationAlertEmail } = require('./emailService');
+
+// WAT = UTC+1, no DST
+const WAT_OFFSET_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function getYesterdayWATBounds() {
+  const now = new Date();
+  const nowWAT = new Date(now.getTime() + WAT_OFFSET_MS);
+
+  const todayWATMidnightUTC = new Date(Date.UTC(
+    nowWAT.getUTCFullYear(),
+    nowWAT.getUTCMonth(),
+    nowWAT.getUTCDate()
+  ));
+
+  const todayStartUTC = new Date(todayWATMidnightUTC.getTime() - WAT_OFFSET_MS);
+  const yesterdayStartUTC = new Date(todayStartUTC.getTime() - DAY_MS);
+  const yesterdayWATMidnightUTC = new Date(todayWATMidnightUTC.getTime() - DAY_MS);
+  const reconciliationDate = yesterdayWATMidnightUTC.toISOString().slice(0, 10);
+
+  return { yesterdayStartUTC, todayStartUTC, reconciliationDate };
+}
+
+async function maybeSendAlert(date, crmCount, pabblyCount, discrepancy, currentAlertSent) {
+  if (Math.abs(discrepancy) > 2 && !currentAlertSent) {
+    await sendReconciliationAlertEmail(date, crmCount, pabblyCount, discrepancy);
+    await pool.query(
+      'UPDATE pabbly_reconciliation_log SET alert_sent = true WHERE reconciliation_date = $1',
+      [date]
+    );
+  }
+}
+
+async function logReconciliationResult(row, date, pendingMessage) {
+  if (row.status !== 'Pending') {
+    await maybeSendAlert(date, row.crm_order_count, row.pabbly_order_count, row.discrepancy, row.alert_sent);
+    console.log(`[Reconciliation] ${date} — CRM: ${row.crm_order_count}, Pabbly: ${row.pabbly_order_count}, Status: ${row.status}`);
+  } else {
+    console.log(`[Reconciliation] ${date} — ${pendingMessage}`);
+  }
+}
+
+// Atomic upsert via ON CONFLICT — the unique index on reconciliation_date
+// serialises concurrent writes. NULL pabbly_order_count/discrepancy on INSERT
+// means "genuinely unknown", not a misleading 0.
+async function runMidnightReconciliation() {
+  const { yesterdayStartUTC, todayStartUTC, reconciliationDate } = getYesterdayWATBounds();
+
+  const countRes = await pool.query(
+    `SELECT COUNT(*)::int AS crm_order_count
+       FROM orders
+      WHERE ordered_at >= $1
+        AND ordered_at  < $2
+        AND api_batch_id IS NOT NULL`,
+    [yesterdayStartUTC, todayStartUTC]
+  );
+  const crmCount = countRes.rows[0].crm_order_count;
+
+  const result = await pool.query(
+    `INSERT INTO pabbly_reconciliation_log
+       (reconciliation_date, crm_order_count, pabbly_order_count, discrepancy, status)
+     VALUES ($1, $2, NULL, NULL, 'Pending')
+     ON CONFLICT (reconciliation_date) DO UPDATE
+       SET crm_order_count = EXCLUDED.crm_order_count,
+           discrepancy = CASE
+             WHEN pabbly_reconciliation_log.pabbly_order_count IS NOT NULL
+             THEN EXCLUDED.crm_order_count - pabbly_reconciliation_log.pabbly_order_count
+             ELSE NULL
+           END,
+           status = CASE
+             WHEN pabbly_reconciliation_log.pabbly_order_count IS NOT NULL
+             THEN CASE
+               WHEN EXCLUDED.crm_order_count - pabbly_reconciliation_log.pabbly_order_count = 0
+               THEN 'Matched' ELSE 'Discrepancy Found'
+             END
+             ELSE 'Pending'
+           END
+     RETURNING reconciliation_date, crm_order_count, pabbly_order_count,
+               discrepancy, status, alert_sent`,
+    [reconciliationDate, crmCount]
+  );
+
+  await logReconciliationResult(result.rows[0], reconciliationDate, `CRM: ${crmCount} written. Awaiting Pabbly count.`);
+}
+
+// Mirror of runMidnightReconciliation — writes pabbly_order_count and
+// calculates discrepancy only when crm_order_count IS NOT NULL.
+async function handlePabblyCount(date, pabblyCount) {
+  const result = await pool.query(
+    `INSERT INTO pabbly_reconciliation_log
+       (reconciliation_date, crm_order_count, pabbly_order_count, discrepancy, status)
+     VALUES ($1, NULL, $2, NULL, 'Pending')
+     ON CONFLICT (reconciliation_date) DO UPDATE
+       SET pabbly_order_count = EXCLUDED.pabbly_order_count,
+           discrepancy = CASE
+             WHEN pabbly_reconciliation_log.crm_order_count IS NOT NULL
+             THEN pabbly_reconciliation_log.crm_order_count - EXCLUDED.pabbly_order_count
+             ELSE NULL
+           END,
+           status = CASE
+             WHEN pabbly_reconciliation_log.crm_order_count IS NOT NULL
+             THEN CASE
+               WHEN pabbly_reconciliation_log.crm_order_count - EXCLUDED.pabbly_order_count = 0
+               THEN 'Matched' ELSE 'Discrepancy Found'
+             END
+             ELSE 'Pending'
+           END
+     RETURNING reconciliation_date, crm_order_count, pabbly_order_count,
+               discrepancy, status, alert_sent`,
+    [date, pabblyCount]
+  );
+
+  await logReconciliationResult(result.rows[0], date, `Pabbly: ${pabblyCount} written. Awaiting midnight CRM count.`);
+}
+
+module.exports = { runMidnightReconciliation, handlePabblyCount };
+
+=== FILE: src/routes/webhook.js ===
+const express = require('express');
+const webhookAuthMiddleware = require('../middleware/webhookAuthMiddleware');
+const { handlePabblyWebhook } = require('../controllers/pabblyWebhookController');
+const { handlePabblyReconcile } = require('../controllers/pabblyReconcileController');
+
+const router = express.Router();
+
+router.post('/pabbly', webhookAuthMiddleware, handlePabblyWebhook);
+router.post('/pabbly-reconcile', webhookAuthMiddleware, handlePabblyReconcile);
+
+module.exports = router;
+
+=== FILE: src/crons/reconciliationCron.js ===
+const cron = require('node-cron');
+const { runMidnightReconciliation } = require('../services/reconciliationService');
+
+// 23:00 UTC = 00:00 WAT (UTC+1, no DST)
+function startReconciliationCron() {
+  cron.schedule('0 23 * * *', async () => {
+    console.log('[Cron] Midnight reconciliation started');
+    try {
+      await runMidnightReconciliation();
+    } catch (err) {
+      console.error('[Cron] Reconciliation failed:', err.message, err.stack);
+    }
+  });
+  console.log('[Cron] Reconciliation cron scheduled (23:00 UTC daily)');
+}
+
+module.exports = { startReconciliationCron };
