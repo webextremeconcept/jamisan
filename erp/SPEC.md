@@ -78,8 +78,8 @@ Hosted at: **app.jamisan.com** (Hetzner Cloud CPX32, Helsinki — IP: 77.42.85.1
 |---|---|---|---|
 | 1 | Database Schema | erp/feature/database-schema | ✅ Complete |
 | 2 | Auth System | erp/feature/auth-system | ✅ Complete |
-| 3 | Order Ingestion | erp/feature/order-ingestion | 🔵 Current |
-| 4 | CSR Interface | erp/feature/csr-interface | Not started |
+| 3 | Order Ingestion | erp/feature/order-ingestion | ✅ Complete |
+| 4 | CSR Interface | erp/feature/csr-interface | 🔵 Current |
 | 5 | Admin Interface | erp/feature/admin-interface | Not started |
 | 6 | Finance Module | erp/feature/finance-module | Not started |
 | 7 | Reporting Dashboard | erp/feature/reporting-dashboard | Not started |
@@ -279,6 +279,9 @@ Commits: bd14521, fb7346d, e885d7e. All 14 QA tests pass. Gemini final sign-off 
 Key files: src/controllers/authController.js, src/middleware/authMiddleware.js, src/services/tokenService.js.
 Migrations: 003_auth_system_columns.sql, 004_pending_2fa_secret.sql.
 
+### Module 3 — Order Ingestion ✅
+16 files, 4 migrations (005-008). Pabbly webhook with Bearer token auth (HMAC timingSafeEqual), CJAM Order ID generation via cjam_order_seq, return customer detection, ban check (order created with status=Banned), product/geo/source FK lookups with Miscellaneous fallback, department+brand inherited from product row. Reconciliation split: midnight cron writes CRM count + POST /webhook/pabbly-reconcile receives Pabbly count. 11 code review fixes + 5 Gemini fixes (idempotency UNIQUE constraint, timezone fix, NULL math, payload sanitization, body size limit). 17 QA tests pass. Commits: 5cd8d1c, 1f78eee, 7264436. Gemini final sign-off received.
+
 ---
 
-*Jamisan ERP — SPEC.md v2.0 | Build Blitz Active | Module 3 Current | Confidential*
+*Jamisan ERP — SPEC.md v2.0 | Build Blitz Active | Module 4 Current | Confidential*
