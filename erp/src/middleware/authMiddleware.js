@@ -76,14 +76,18 @@ async function authMiddleware(req, res, next) {
     token_version: user.token_version,
   };
 
-  // Fire-and-forget: update last_active_at on most recent open session
+  // Fire-and-forget: update last_active_at on most recent open session.
+  // FIX 2: PostgreSQL does not support ORDER BY / LIMIT in UPDATE directly — use subquery.
   pool
     .query(
       `UPDATE session_log
        SET last_active_at = now()
-       WHERE user_id = $1 AND logged_out_at IS NULL
-       ORDER BY id DESC
-       LIMIT 1`,
+       WHERE id = (
+         SELECT id FROM session_log
+         WHERE user_id = $1 AND logged_out_at IS NULL
+         ORDER BY id DESC
+         LIMIT 1
+       )`,
       [user.id]
     )
     .catch((err) => {

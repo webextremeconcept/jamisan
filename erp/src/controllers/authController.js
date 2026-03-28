@@ -13,11 +13,16 @@ const { logAudit } = require('../utils/auditLogger');
 
 const BCRYPT_ROUNDS = 12;
 const LOCKOUT_THRESHOLD = 5;
-const LOCKOUT_DURATION_MIN = 30;
+const LOCKOUT_DURATION_MIN = 30; // eslint-disable-line no-unused-vars
 const EMAIL_ALERT_THRESHOLD = 10;
 
 // Roles that require 2FA — exact strings from the database
 const TWO_FA_ROLES = ['Director', 'Operations_Manager', 'Accountant'];
+
+// FIX 4: Pre-computed bcrypt hash for timing-attack mitigation on unknown-email path.
+// bcrypt.compare runs the full algorithm (~100ms) and returns false,
+// preventing email enumeration via response-time differences.
+const DUMMY_HASH = '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj4QB5i/.Tri';
 
 // MODULE 5 REQUIREMENT (Gemini FIX 3): Any admin route that toggles is_active = false
 // MUST also increment token_version atomically in the same UPDATE statement:
@@ -26,14 +31,10 @@ const TWO_FA_ROLES = ['Director', 'Operations_Manager', 'Accountant'];
 
 /**
  * Helper: extract client IP from request.
- * Respects X-Forwarded-For (Cloudflare / Nginx proxy).
+ * app.js sets trust proxy — req.ip is already the real client address.
  */
 function getClientIp(req) {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (forwarded) {
-    return forwarded.split(',')[0].trim();
-  }
-  return req.ip || req.connection?.remoteAddress || 'unknown';
+  return req.ip || 'unknown';
 }
 
 /**
@@ -60,17 +61,51 @@ async function issueTokensAndCreateSession(user, req) {
 
 /**
  * Helper: load user by ID with role name (used by 2FA flows after temp token verification).
+ * Includes pending_2fa_secret for server-side TOTP enrolment (FIX 10).
  */
 async function loadUserById(userId) {
   const result = await pool.query(
     `SELECT u.id, u.role_id, r.name AS role_name, u.email, u.display_name,
-            u.token_version, u.is_active, u.two_fa_enabled, u.two_fa_secret
+            u.token_version, u.is_active, u.two_fa_enabled, u.two_fa_secret,
+            u.pending_2fa_secret
      FROM users u
      JOIN roles r ON r.id = u.role_id
      WHERE u.id = $1`,
     [userId]
   );
   return result.rows[0] || null;
+}
+
+/**
+ * FIX 8: Check audit_log for 10+ login failures in 24h and fire alert email.
+ * Called after every login_failed audit entry — including unknown-email path.
+ * queryEmail is stored as new_value in audit_log for all login_failed actions.
+ */
+async function checkAndSendLoginAlert(queryEmail, displayName) {
+  try {
+    const countResult = await pool.query(
+      `SELECT COUNT(*)::int AS cnt FROM audit_log
+       WHERE action = 'login_failed'
+         AND new_value = $1
+         AND created_at > now() - interval '24 hours'`,
+      [queryEmail]
+    );
+    if (countResult.rows[0].cnt >= EMAIL_ALERT_THRESHOLD) {
+      const recentFailures = await pool.query(
+        `SELECT ip_address, created_at FROM audit_log
+         WHERE action = 'login_failed'
+           AND new_value = $1
+           AND created_at > now() - interval '24 hours'
+         ORDER BY created_at DESC`,
+        [queryEmail]
+      );
+      sendLoginAlertEmail(displayName, recentFailures.rows).catch((err) => {
+        console.error('[Auth] Failed to send login alert email:', err.message);
+      });
+    }
+  } catch (err) {
+    console.error('[Auth] Failed to run login alert check:', err.message);
+  }
 }
 
 // ============================================================================
@@ -80,7 +115,8 @@ async function login(req, res) {
   const { email, password } = req.body;
   const ip = getClientIp(req);
 
-  if (!email || !password) {
+  // FIX 6: typeof validation — reject non-string inputs (prevents object injection attacks)
+  if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
     return res.status(400).json({ message: 'Email and password are required' });
   }
 
@@ -97,54 +133,54 @@ async function login(req, res) {
 
   const user = userResult.rows[0];
 
-  // Unknown email — audit with null userId, store email in new_value for 24h query
+  // Unknown email — FIX 4: run dummy bcrypt to prevent timing-based enumeration
   if (!user) {
+    await bcrypt.compare(password, DUMMY_HASH);
     await logAudit(null, 'login_failed', {
       ipAddress: ip,
       newValue: email,
     });
+    // FIX 8: alert check runs on unknown-email path
+    await checkAndSendLoginAlert(email, email);
     return res.status(401).json({ message: 'Invalid email or password' });
   }
 
-  // Account deactivated
+  // Account deactivated — FIX 7: generic message, no information leakage
   if (!user.is_active) {
     await logAudit(user.id, 'login_failed', {
       ipAddress: ip,
       newValue: user.email,
     });
-    return res.status(401).json({ message: 'Account deactivated — contact your Operations Manager' });
+    await checkAndSendLoginAlert(user.email, user.username || user.email);
+    return res.status(401).json({ message: 'Invalid email or password' });
   }
 
   // Lockout check — BEFORE bcrypt.compare to save CPU
+  // FIX 7: generic message (423 status preserved; message normalized)
   if (user.locked_until && new Date(user.locked_until) > new Date()) {
     await logAudit(user.id, 'login_failed', {
       ipAddress: ip,
       newValue: user.email,
     });
-    return res.status(423).json({ message: 'Account locked — try again later' });
+    await checkAndSendLoginAlert(user.email, user.username || user.email);
+    return res.status(423).json({ message: 'Invalid email or password' });
   }
 
   // Password verification
   const passwordValid = await bcrypt.compare(password, user.password_hash);
 
   if (!passwordValid) {
-    // Atomic increment at DB level — never read/increment/write in JS (Gemini FIX 2)
-    const incrementResult = await pool.query(
-      `UPDATE users SET failed_login_attempts = failed_login_attempts + 1
-       WHERE id = $1
-       RETURNING failed_login_attempts`,
-      [user.id]
+    // FIX 9: Atomic increment + conditional lock in a single UPDATE — eliminates race condition
+    await pool.query(
+      `UPDATE users
+       SET failed_login_attempts = failed_login_attempts + 1,
+           locked_until = CASE
+             WHEN failed_login_attempts + 1 >= $2 THEN now() + interval '30 minutes'
+             ELSE locked_until
+           END
+       WHERE id = $1`,
+      [user.id, LOCKOUT_THRESHOLD]
     );
-    const newAttempts = incrementResult.rows[0].failed_login_attempts;
-
-    // Lock account if threshold reached
-    if (newAttempts >= LOCKOUT_THRESHOLD) {
-      const lockUntil = new Date(Date.now() + LOCKOUT_DURATION_MIN * 60 * 1000);
-      await pool.query(
-        `UPDATE users SET locked_until = $1 WHERE id = $2`,
-        [lockUntil, user.id]
-      );
-    }
 
     // Audit log — store email in new_value as the 24h alert query key
     await logAudit(user.id, 'login_failed', {
@@ -152,30 +188,8 @@ async function login(req, res) {
       newValue: user.email,
     });
 
-    // Email alert: count failures in audit_log within 24h (source of truth)
-    // This survives counter resets from successful logins
-    const countResult = await pool.query(
-      `SELECT COUNT(*)::int AS cnt FROM audit_log
-       WHERE action = 'login_failed'
-         AND new_value = $1
-         AND created_at > now() - interval '24 hours'`,
-      [user.email]
-    );
-    const failuresIn24h = countResult.rows[0].cnt;
-
-    if (failuresIn24h >= EMAIL_ALERT_THRESHOLD) {
-      const recentFailures = await pool.query(
-        `SELECT ip_address, created_at FROM audit_log
-         WHERE action = 'login_failed'
-           AND new_value = $1
-           AND created_at > now() - interval '24 hours'
-         ORDER BY created_at DESC`,
-        [user.email]
-      );
-      sendLoginAlertEmail(user.username, recentFailures.rows).catch((err) => {
-        console.error('[Auth] Failed to send login alert email:', err.message);
-      });
-    }
+    // FIX 8: alert check unified across all login_failed paths
+    await checkAndSendLoginAlert(user.email, user.username || user.email);
 
     return res.status(401).json({ message: 'Invalid email or password' });
   }
@@ -311,14 +325,25 @@ async function twoFactorSetup(req, res) {
     return res.status(401).json({ message: 'Session invalidated' });
   }
 
+  // FIX 3: Guard against re-initiating setup on an already-configured account
+  if (user.two_fa_enabled && user.two_fa_secret) {
+    return res.status(400).json({ message: '2FA is already configured for this account' });
+  }
+
   // Generate new TOTP secret
   const { secret, otpauth_url } = twoFactor.generateSecret(user.email);
   const qrCode = await twoFactor.generateQRCode(otpauth_url);
 
+  // FIX 10: Store secret server-side — client never receives the raw secret
+  await pool.query(
+    `UPDATE users SET pending_2fa_secret = $1 WHERE id = $2`,
+    [secret, user.id]
+  );
+
   await logAudit(user.id, '2fa_setup_initiated', { ipAddress: ip });
 
+  // Return only the QR code — secret is server-side only
   return res.status(200).json({
-    secret,
     qr_code: qrCode,
   });
 }
@@ -327,11 +352,12 @@ async function twoFactorSetup(req, res) {
 // POST /auth/2fa/activate
 // ============================================================================
 async function twoFactorActivate(req, res) {
-  const { temp_token, secret, totp_code } = req.body;
+  // FIX 10: secret removed from request body — read from server-side storage
+  const { temp_token, totp_code } = req.body;
   const ip = getClientIp(req);
 
-  if (!temp_token || !secret || !totp_code) {
-    return res.status(400).json({ message: 'temp_token, secret, and totp_code are required' });
+  if (!temp_token || !totp_code) {
+    return res.status(400).json({ message: 'temp_token and totp_code are required' });
   }
 
   let payload;
@@ -350,20 +376,29 @@ async function twoFactorActivate(req, res) {
     return res.status(401).json({ message: 'Session invalidated' });
   }
 
-  // Verify the TOTP code against the provided secret to confirm the user scanned correctly
-  const isValid = twoFactor.verifyToken(secret, totp_code);
+  // FIX 10: Read secret from server-side storage — never trust a client-supplied value
+  if (!user.pending_2fa_secret) {
+    return res.status(400).json({ message: '2FA setup has not been initiated — call /auth/2fa/setup first' });
+  }
+
+  // Verify TOTP code against the server-stored pending secret
+  const isValid = twoFactor.verifyToken(user.pending_2fa_secret, totp_code);
   if (!isValid) {
     await logAudit(user.id, '2fa_activate_failed', { ipAddress: ip });
     return res.status(401).json({ message: 'Invalid TOTP code — scan the QR code and try again' });
   }
 
-  // Persist the secret and enable 2FA
+  // Atomically promote pending_2fa_secret → two_fa_secret and clear the pending column
   await pool.query(
-    `UPDATE users SET two_fa_secret = $1, two_fa_enabled = true WHERE id = $2`,
-    [secret, user.id]
+    `UPDATE users
+     SET two_fa_secret = pending_2fa_secret,
+         two_fa_enabled = true,
+         pending_2fa_secret = NULL
+     WHERE id = $1`,
+    [user.id]
   );
 
-  // Reload user with updated token_version for token generation
+  // Reload user with fresh state for token generation
   const updatedUser = await loadUserById(user.id);
 
   // Issue real tokens
