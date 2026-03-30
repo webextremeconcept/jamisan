@@ -96,8 +96,9 @@ This workflow must be followed for every module without exception.
 ```
 1. git pull origin main
 2. Read SPEC.md (this file) — you are doing this now ✓
-3. git checkout erp/feature/[current-module]
-4. Read all existing files in the current branch before writing anything new
+3. Read TOOLS.md — tool and plugin usage guide
+4. git checkout erp/feature/[current-module]
+5. Read all existing files in the current branch before writing anything new
 ```
 
 ### Stage 2 — Research (Before Any Code)
