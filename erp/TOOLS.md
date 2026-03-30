@@ -128,7 +128,8 @@ Run Code Simplifier on: [file1], [file2]
 Use the Frontend Design plugin to build [component] matching the attached mockup screenshots.
 ```
 
-**Always attach mockup screenshots when using this plugin.**
+⚠ Always attach mockup screenshots when using this plugin.
+If Claude Code cannot attach local image files directly, ask the user to provide the relevant Day 3 mockup screenshots before proceeding. Claude Code must have visual reference before generating any UI component.
 
 **Design system (locked — all modules inherit):**
 | Token | Value | Use |
@@ -238,7 +239,9 @@ You are a senior [Node.js security architect / PostgreSQL database architect /
 frontend architect] performing a production peer review of Module [N] — [Name]
 for a Nigerian e-commerce ERP (11,000+ orders/month, ~50 staff, Hetzner CPX32).
 
-Previous modules: Module 1 (DB Schema), Module 2 (Auth), Module 3 (Order Ingestion) — all complete.
+Previous modules completed (update this list dynamically — list ALL modules 1 through N-1):
+[Example: Module 1 (DB Schema), Module 2 (Auth), Module 3 (Order Ingestion) — all complete.]
+⚠ Always update this list to include every completed module before sending to Gemini.
 
 Review the attached files for:
 1. Security vulnerabilities or logic errors
@@ -279,7 +282,7 @@ Be critical. This handles real money and real employee data.
 | DB password | see /opt/jamisan-erp/.env |
 | Node process | PM2 (Module 9) / nohup node src/server.js currently |
 | Schema export | `pg_dump -U jamisan_admin -h localhost -d jamisan_erp --schema-only -f /root/module[N]_final.sql` |
-| SSH key | C:\Users\bmegb\.ssh\id_ed25519 |
+| SSH key | Stored locally — do not commit to public repos |
 | SSH user | root |
 
 ---
