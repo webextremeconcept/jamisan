@@ -20,18 +20,11 @@ const EMAIL_ALERT_THRESHOLD = 10;
 const TWO_FA_ROLES = ['Director', 'Operations_Manager', 'Accountant'];
 
 // Pre-computed bcrypt hash used on the unknown-email path so that
-// bcrypt.compare always runs (~100ms), preventing email enumeration
-// via response-time differences.
+// bcrypt.compare always runs (~100ms), preventing enumeration
 const DUMMY_HASH = '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj4QB5i/.Tri';
-
-// NOTE: Any admin route that toggles is_active = false MUST also increment
-// token_version atomically in the same UPDATE statement:
-//   UPDATE users SET is_active = false, token_version = token_version + 1 WHERE id = $1
-// This ensures all existing JWTs are immediately rejected by authMiddleware Gate 4.
 
 /**
  * Extract client IP from request.
- * app.js sets trust proxy — req.ip is already the real client address.
  */
 function getClientIp(req) {
   return req.ip || 'unknown';
@@ -67,6 +60,8 @@ function buildUserPayload(user) {
     id: user.id,
     display_name: user.display_name,
     role: user.role_name,
+    username: user.username,
+    email: user.email
   };
 }
 
@@ -76,7 +71,7 @@ function buildUserPayload(user) {
  */
 async function loadUserById(userId) {
   const result = await pool.query(
-    `SELECT u.id, u.role_id, r.name AS role_name, u.email, u.display_name,
+    `SELECT u.id, u.role_id, r.name AS role_name, u.email, u.username, u.display_name,
             u.token_version, u.is_active, u.two_fa_enabled, u.two_fa_secret,
             u.pending_2fa_secret
      FROM users u
@@ -84,6 +79,7 @@ async function loadUserById(userId) {
      WHERE u.id = $1`,
     [userId]
   );
+
   return result.rows[0] || null;
 }
 
@@ -116,9 +112,6 @@ async function verifyTempTokenAndLoadUser(tempToken, res) {
 
 /**
  * Check audit_log for 10+ login failures in 24h and send an alert email.
- * A login_alert_sent entry is written before sending to suppress duplicates
- * within the same 24h window. queryEmail is stored as new_value for all
- * login_failed actions.
  */
 async function checkAndSendLoginAlert(queryEmail, displayName) {
   try {
@@ -155,13 +148,12 @@ async function checkAndSendLoginAlert(queryEmail, displayName) {
       [queryEmail]
     );
 
-    // Write audit entry before sending to reduce (but not fully eliminate
-    // under concurrent load) duplicate sends. Acceptable for an internal ERP.
     await logAudit(null, 'login_alert_sent', { newValue: queryEmail });
 
     sendLoginAlertEmail(displayName, recentFailures.rows).catch((err) => {
       console.error('[Auth] Failed to send login alert email:', err.message);
     });
+
   } catch (err) {
     console.error('[Auth] Failed to run login alert check:', err.message);
   }
@@ -191,7 +183,6 @@ async function login(req, res) {
 
   const user = userResult.rows[0];
 
-  // Unknown user — run dummy bcrypt to prevent timing-based enumeration
   if (!user) {
     await bcrypt.compare(password, DUMMY_HASH);
     await logAudit(null, 'login_failed', { ipAddress: ip, newValue: identifier });
@@ -199,21 +190,21 @@ async function login(req, res) {
     return res.status(401).json({ message: 'Invalid email or password' });
   }
 
-  // Account deactivated — generic message to avoid information leakage
+  const userIdentifier = user.email || user.username;
+  const userDisplayName = user.display_name || user.username;
+
   if (!user.is_active) {
-    await logAudit(user.id, 'login_failed', { ipAddress: ip, newValue: user.email });
-    await checkAndSendLoginAlert(user.email, user.username || user.email);
+    await logAudit(user.id, 'login_failed', { ipAddress: ip, newValue: userIdentifier });
+    await checkAndSendLoginAlert(userIdentifier, userDisplayName);
     return res.status(401).json({ message: 'Invalid email or password' });
   }
 
-  // Lockout check — before bcrypt.compare to save CPU
   if (user.locked_until && new Date(user.locked_until) > new Date()) {
-    await logAudit(user.id, 'login_failed', { ipAddress: ip, newValue: user.email });
-    await checkAndSendLoginAlert(user.email, user.username || user.email);
+    await logAudit(user.id, 'login_failed', { ipAddress: ip, newValue: userIdentifier });
+    await checkAndSendLoginAlert(userIdentifier, userDisplayName);
     return res.status(423).json({ message: 'Invalid email or password' });
   }
 
-  // Lockout expired — reset counter so the user gets a clean slate
   if (user.locked_until && new Date(user.locked_until) <= new Date()) {
     await pool.query(
       `UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1`,
@@ -224,7 +215,6 @@ async function login(req, res) {
   const passwordValid = await bcrypt.compare(password, user.password_hash);
 
   if (!passwordValid) {
-    // Atomic increment + conditional lock in a single UPDATE to avoid races
     await pool.query(
       `UPDATE users
        SET failed_login_attempts = failed_login_attempts + 1,
@@ -236,32 +226,26 @@ async function login(req, res) {
       [user.id, LOCKOUT_THRESHOLD, LOCKOUT_DURATION_MIN]
     );
 
-    await logAudit(user.id, 'login_failed', { ipAddress: ip, newValue: user.email });
-    await checkAndSendLoginAlert(user.email, user.username || user.email);
+    await logAudit(user.id, 'login_failed', { ipAddress: ip, newValue: userIdentifier });
+    await checkAndSendLoginAlert(userIdentifier, userDisplayName);
     return res.status(401).json({ message: 'Invalid email or password' });
   }
-
-  // --- Password is correct ---
 
   await pool.query(
     `UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1`,
     [user.id]
   );
 
-  // 2FA required for elevated roles
   if (TWO_FA_ROLES.includes(user.role_name)) {
     const tempToken = generateTempToken(user);
-
     if (user.two_fa_enabled && user.two_fa_secret) {
       await logAudit(user.id, 'login_2fa_pending', { ipAddress: ip });
       return res.status(200).json({ requires_2fa: true, temp_token: tempToken });
     }
-
     await logAudit(user.id, 'login_2fa_setup_required', { ipAddress: ip });
     return res.status(200).json({ requires_2fa_setup: true, temp_token: tempToken });
   }
 
-  // Non-2FA role — issue tokens immediately
   const { accessToken, refreshToken } = await issueTokensAndCreateSession(user, req);
   await logAudit(user.id, 'login_success', { ipAddress: ip });
 
@@ -326,21 +310,17 @@ async function twoFactorSetup(req, res) {
   if (!result) return;
   const { user } = result;
 
-  // Guard against double-setup — would break any authenticator app already
-  // scanning the first QR code
   if (user.pending_2fa_secret) {
     return res.status(400).json({ message: '2FA setup is already in progress. Please scan the QR code already sent or contact your Operations Manager.' });
   }
 
-  // Guard against re-setup on an already-configured account
   if (user.two_fa_enabled && user.two_fa_secret) {
     return res.status(400).json({ message: '2FA is already configured for this account' });
   }
 
-  const { secret, otpauth_url } = twoFactor.generateSecret(user.email);
+  const { secret, otpauth_url } = twoFactor.generateSecret(user.email || user.username);
   const qrCode = await twoFactor.generateQRCode(otpauth_url);
 
-  // Store secret server-side — the client never receives the raw secret
   await pool.query(
     `UPDATE users SET pending_2fa_secret = $1 WHERE id = $2`,
     [secret, user.id]
@@ -376,7 +356,6 @@ async function twoFactorActivate(req, res) {
     return res.status(401).json({ message: 'Invalid TOTP code — scan the QR code and try again' });
   }
 
-  // Atomically promote pending_2fa_secret -> two_fa_secret
   await pool.query(
     `UPDATE users
      SET two_fa_secret = pending_2fa_secret,
@@ -420,7 +399,8 @@ async function refresh(req, res) {
   }
 
   const result = await pool.query(
-    `SELECT u.id, u.role_id, r.name AS role_name, u.token_version, u.is_active
+    `SELECT u.id, u.role_id, r.name AS role_name, u.email, u.username, u.display_name,
+            u.token_version, u.is_active
      FROM users u
      JOIN roles r ON r.id = u.role_id
      WHERE u.id = $1`,
@@ -470,6 +450,7 @@ async function changePassword(req, res) {
     `SELECT password_hash FROM users WHERE id = $1`,
     [userId]
   );
+
   const user = result.rows[0];
 
   if (!user) {
@@ -486,6 +467,7 @@ async function changePassword(req, res) {
   }
 
   const newHash = await bcrypt.hash(new_password, BCRYPT_ROUNDS);
+
   await pool.query(
     `UPDATE users SET password_hash = $1, token_version = token_version + 1 WHERE id = $2`,
     [newHash, userId]
