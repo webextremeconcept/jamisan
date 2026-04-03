@@ -5,12 +5,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title><%= typeof title !== 'undefined' ? title + ' — ' : '' %>Jamisan ERP</title>
 
-  <!-- JWT injection — MUST be registered before HTMX loads so hx-trigger="load" gets the token -->
+  <!-- JWT + HTMX error handlers — MUST be registered before HTMX loads -->
   <script>
+    // Attach Bearer token to every HTMX request
     document.addEventListener('htmx:configRequest', function(event) {
       var token = localStorage.getItem('accessToken');
       if (token) {
         event.detail.headers['Authorization'] = 'Bearer ' + token;
+      }
+    });
+
+    // 401 handler — token expired or invalidated, redirect to login
+    document.addEventListener('htmx:responseError', function(event) {
+      if (event.detail.xhr.status === 401) {
+        localStorage.removeItem('accessToken');
+        localStorage.removeItem('refreshToken');
+        window.location.href = '/login';
       }
     });
   </script>
@@ -18,7 +28,7 @@
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
 
-  <!-- HTMX + json-enc extension -->
+  <!-- HTMX loads AFTER the listeners are registered -->
   <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
   <script src="https://unpkg.com/htmx-ext-json-enc@2.0.1/json-enc.js"></script>
 

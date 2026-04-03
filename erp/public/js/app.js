@@ -16,30 +16,22 @@
   }
 })();
 
-/* ── HTMX: inject JWT on every request ── */
-document.body.addEventListener('htmx:configRequest', (event) => {
-  const token = localStorage.getItem('accessToken');
-  if (token) {
-    event.detail.headers['Authorization'] = 'Bearer ' + token;
-  }
-});
-
-/* ── HTMX: handle 401 — token expired or invalidated ── */
-document.body.addEventListener('htmx:responseError', (event) => {
-  if (event.detail.xhr.status === 401) {
-    localStorage.removeItem('accessToken');
-    localStorage.removeItem('refreshToken');
-    window.location.href = '/login';
-  }
-});
+/* ── HTMX: configRequest + responseError are in shell.ejs <head> (before HTMX loads) ── */
 
 /* ── HTMX: handle network errors ── */
-document.body.addEventListener('htmx:sendError', () => {
+document.addEventListener('htmx:sendError', () => {
   showToast('Network error — check your connection', 'error');
 });
 
+/* ── HTMX: initialize Alpine on swapped content ── */
+document.addEventListener('htmx:afterSwap', (event) => {
+  if (window.Alpine) {
+    Alpine.initTree(event.detail.target);
+  }
+});
+
 /* ── HTMX: HX-Trigger toast — server sends { showToast: { message, type } } ── */
-document.body.addEventListener('showToast', (e) => {
+document.addEventListener('showToast', (e) => {
   const { message, type } = e.detail || {};
   if (message) showToast(message, type || 'error');
 });
@@ -273,6 +265,12 @@ document.addEventListener('alpine:init', () => {
   Alpine.effect(() => {
     const sidebar = document.getElementById('sidebar');
     if (sidebar) sidebar.classList.toggle('collapsed', Alpine.store('ui').sidebarCollapsed);
+  });
+
+  // Sync panel overlay open/close
+  Alpine.effect(() => {
+    const overlay = document.getElementById('slide-out-overlay');
+    if (overlay) overlay.classList.toggle('open', Alpine.store('ui').panelOpen);
   });
 
   // Sync right intel panel collapsed class + chevron rotation
