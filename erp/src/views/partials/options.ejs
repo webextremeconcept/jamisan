@@ -1,0 +1,3 @@
+<% rows.forEach(row => { %>
+  <option value="<%= row.id %>"><%= row.label || row.name || row.description %></option>
+<% }); %>

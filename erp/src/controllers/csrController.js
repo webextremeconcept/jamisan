@@ -81,6 +81,7 @@ async function updateOrderCtrl(req, res, next) {
       ipAddress: req.ip,
     });
     if (!order) return res.status(404).json({ message: 'Order not found' });
+    res.set('HX-Trigger', JSON.stringify({ 'order-saved-success': true }));
     res.render('partials/order-row', { o: order });
   } catch (err) {
     // HTMX does not swap HTML on error status codes — always return 200
@@ -94,7 +95,7 @@ async function updateOrderCtrl(req, res, next) {
     } catch (fetchErr) {
       // Fallback: never vaporise the row — return a visible error row
       return res.status(200).send(
-        '<tr class="bg-red-50"><td colspan="100%" style="padding:16px;color:#DC2626;text-align:center;">Data sync error. Please refresh the page.</td></tr>'
+        '<tr class="bg-red-50"><td colspan="17" style="padding:16px;color:#DC2626;text-align:center;">Data sync error. Please refresh the page.</td></tr>'
       );
     }
   }
@@ -211,12 +212,26 @@ async function getStates(req, res, next) {
   } catch (err) { next(err); }
 }
 
+async function getStatesOptions(req, res, next) {
+  try {
+    const rows = await svc.getStates();
+    res.render('partials/options', { rows });
+  } catch (err) { next(err); }
+}
+
+async function getProductsOptions(req, res, next) {
+  try {
+    const rows = await svc.getProducts();
+    res.render('partials/options', { rows });
+  } catch (err) { next(err); }
+}
+
 async function getLgas(req, res, next) {
   try {
     const stateId = parseInt(req.query.admin_level_1_id);
     if (isNaN(stateId)) return res.send('');
     const rows = await svc.getLgas(stateId);
-    res.send(rows.map(r => `<option value="${esc(String(r.id))}">${esc(r.name)}</option>`).join('\n'));
+    res.render('partials/options', { rows });
   } catch (err) { next(err); }
 }
 
@@ -224,7 +239,7 @@ async function getAgentsByState(req, res, next) {
   try {
     const stateId = parseInt(req.query.admin_level_1_id);
     const rows = await svc.getAgentsByState(isNaN(stateId) ? null : stateId);
-    res.send(rows.map(r => `<option value="${esc(String(r.id))}">${esc(r.name)}</option>`).join('\n'));
+    res.render('partials/options', { rows });
   } catch (err) { next(err); }
 }
 
@@ -243,7 +258,7 @@ async function getFailureReasons(req, res, next) {
 async function getFailureReasonsOptions(req, res, next) {
   try {
     const rows = await svc.getFailureReasons(req.query.status || null);
-    res.send(rows.map(r => `<option value="${esc(String(r.id))}">${esc(r.description)}</option>`).join('\n'));
+    res.render('partials/options', { rows });
   } catch (err) { next(err); }
 }
 
@@ -267,4 +282,6 @@ module.exports = {
   getProducts,
   getFailureReasons,
   getFailureReasonsOptions,
+  getStatesOptions,
+  getProductsOptions,
 };

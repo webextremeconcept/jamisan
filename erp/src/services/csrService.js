@@ -630,10 +630,10 @@ async function getLeaderboard() {
       u.display_name,
       COUNT(o.id)::int                                           AS total_orders,
       COUNT(o.id) FILTER (WHERE o.status = 'Cash Paid')::int     AS cash_paid_orders,
-      ROUND(
+      COALESCE(ROUND(
         COUNT(o.id) FILTER (WHERE o.status = 'Cash Paid') * 100.0
         / NULLIF(COUNT(o.id), 0), 1
-      )                                                          AS conversion_rate
+      ), 0)                                                      AS conversion_rate
     FROM users u
     JOIN roles r ON r.id = u.role_id
     LEFT JOIN orders o ON o.assigned_csr_id = u.id

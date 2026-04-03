@@ -98,7 +98,7 @@ const statusGroups = [
           hx-swap="outerHTML"
           hx-ext="json-enc"
           x-on:change="$store.ui.hasUnsavedChanges = true"
-          x-on:htmx:after-request="if($event.detail.successful) { $store.ui.hasUnsavedChanges = false; $store.ui.panelOpen = false; }">
+          @order-saved-success.window="$store.ui.panelOpen = false; $store.ui.hasUnsavedChanges = false;">
 
       <!-- Phone Number -->
       <div class="pp-row">
@@ -171,10 +171,13 @@ const statusGroups = [
       <div class="pp-row">
         <div class="pp-icon"><svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z"/></svg></div>
         <label class="pp-label">State</label>
-        <select class="pp-input" name="admin_level_1_id"
-                x-on:change="
-                  htmx.ajax('GET', '/api/csr/lookups/lgas?admin_level_1_id=' + $event.target.value, {target: '#panel-lga-<%= o.id %>', swap: 'innerHTML'});
-                  htmx.ajax('GET', '/api/csr/lookups/agents-by-state?admin_level_1_id=' + $event.target.value, {target: '#panel-agent-<%= o.id %>', swap: 'innerHTML'});
+        <select class="pp-input" name="admin_level_1_id" id="panel-state-<%= o.id %>"
+                hx-get="/api/csr/lookups/states-options"
+                hx-trigger="load"
+                hx-swap="innerHTML append"
+                onchange="
+                  htmx.ajax('GET', '/api/csr/lookups/lgas?admin_level_1_id=' + this.value, {target: '#panel-lga-<%= o.id %>', swap: 'innerHTML'});
+                  htmx.ajax('GET', '/api/csr/lookups/agents-by-state?admin_level_1_id=' + this.value, {target: '#panel-agent-<%= o.id %>', swap: 'innerHTML'});
                 ">
           <option value="">— Select State —</option>
           <% if (o.admin_level_1_id) { %><option value="<%= o.admin_level_1_id %>" selected><%= o.state_name %></option><% } %>
@@ -213,8 +216,13 @@ const statusGroups = [
       <div class="pp-row">
         <div class="pp-icon"><svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M21 7.5l-9-5.25L3 7.5m18 0l-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25"/></svg></div>
         <label class="pp-label">Main Product</label>
-        <input type="text" class="pp-input pp-readonly" value="<%= o.product_name || '' %>" readonly>
-        <input type="hidden" name="product_id" value="<%= o.product_id || '' %>">
+        <select class="pp-input" name="product_id"
+                hx-get="/api/csr/lookups/products-options"
+                hx-trigger="load"
+                hx-swap="innerHTML append">
+          <option value="">— Select Product —</option>
+          <% if (o.product_id) { %><option value="<%= o.product_id %>" selected><%= o.product_name %></option><% } %>
+        </select>
       </div>
 
       <!-- Quantity (Main) -->
