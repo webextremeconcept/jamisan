@@ -1,0 +1,25 @@
+<%
+/*
+ * top-nav.ejs — Level 1 navigation: CRM / SCHEDULED / AGENTS / CONTACTS / PERFORMANCE
+ * Receives: activeTab (string, default 'database')
+ * Each button replaces #page-content via HTMX.
+ */
+const navItems = [
+  { key: 'database',    label: 'CRM',         endpoint: '/api/csr/dashboard' },
+  { key: 'scheduled',   label: 'SCHEDULED',   endpoint: '/api/csr/scheduled' },
+  { key: 'agents',      label: 'AGENTS',      endpoint: '/api/csr/agents' },
+  { key: 'contacts',    label: 'CONTACTS',    endpoint: '/api/csr/contacts' },
+  { key: 'performance', label: 'PERFORMANCE', endpoint: '/api/csr/performance' },
+];
+const active = typeof activeTab !== 'undefined' ? activeTab : 'database';
+%>
+<div id="top-nav">
+  <% navItems.forEach(function(item) { %>
+    <button class="top-nav-item <%= active === item.key ? 'active' : '' %>"
+            hx-get="<%= item.endpoint %>"
+            hx-target="#page-content"
+            hx-swap="innerHTML">
+      <%= item.label %>
+    </button>
+  <% }); %>
+</div>

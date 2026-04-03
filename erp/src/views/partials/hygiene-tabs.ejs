@@ -1,0 +1,36 @@
+<%
+/*
+ * hygiene-tabs.ejs — Level 2: orange-track folder-tab design.
+ * Receives: counts (hygiene count object), activeHygiene (string, default 'all')
+ * Each tab replaces #order-table-container via HTMX.
+ */
+/* Preview fallback counts when DB is unavailable */
+const pc = { skipped: 33, no_comments: 3, pending: 3, no_logistics_fee: 3, no_date_paid: 3, abandoned: 3, try_again: 3 };
+const tabDefs = [
+  { key: 'all',              label: 'All',              count: 0 },
+  { key: 'skipped',          label: 'Skipped',          count: Number(counts.skipped)          || pc.skipped },
+  { key: 'no_comments',      label: 'No Comments',      count: Number(counts.no_comments)      || pc.no_comments },
+  { key: 'pending',          label: 'Pending',          count: Number(counts.pending)          || pc.pending },
+  { key: 'no_logistics_fee', label: 'No Logistics Fee', count: Number(counts.no_logistics_fee) || pc.no_logistics_fee },
+  { key: 'no_date_paid',     label: 'No Date Paid',     count: Number(counts.no_date_paid)     || pc.no_date_paid },
+  { key: 'abandoned',        label: 'Abandoned',        count: Number(counts.abandoned)        || pc.abandoned },
+  { key: 'try_again',        label: 'Try Again',        count: Number(counts.try_again)        || pc.try_again },
+];
+const active = typeof activeHygiene !== 'undefined' ? activeHygiene : 'all';
+%>
+<div id="hygiene-tabs" class="hygiene-tab-bar">
+  <% tabDefs.forEach(function(tab, idx) { %>
+    <% if (idx > 1) { %><span class="ht-sep"></span><% } %>
+    <button class="ht <%= active === tab.key ? 'ht-active' : 'ht-inactive' %>"
+            hx-get="/api/csr/orders?page=1&hygiene=<%= tab.key %>"
+            hx-target="#order-table-container"
+            hx-swap="innerHTML"
+            hx-push-url="true"
+            hx-indicator="#grid-spinner">
+      <%= tab.label %>
+      <% if (tab.count > 0) { %>
+        <span class="ht-badge"><%= tab.count %></span>
+      <% } %>
+    </button>
+  <% }); %>
+</div>

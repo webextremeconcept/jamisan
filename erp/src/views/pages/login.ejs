@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login — Jamisan ERP</title>
+  <link rel="stylesheet" href="/css/app.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="login-page">
+
+<div class="login-card" x-data="loginForm()">
+
+  <!-- Logo + subtitle -->
+  <div style="text-align:center; margin-bottom:28px;">
+    <img src="/img/jamisan-logo.png" alt="Jamisan ERP" style="height:40px; display:inline-block;">
+    <p style="color:#9CA3AF; font-size:0.875rem; margin-top:10px; margin-bottom:0;">Welcome Back</p>
+  </div>
+
+  <!-- Step 1: Login form -->
+  <div x-show="step === 'login'">
+    <!-- Email / Username -->
+    <div class="form-group">
+      <div class="input-icon-wrap">
+        <svg class="field-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round"
+                d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+        </svg>
+        <input
+          type="text"
+          class="form-input"
+          x-model="username"
+          placeholder="Email address or username"
+          @keydown.enter="submit"
+          autocomplete="username"
+          :disabled="loading">
+      </div>
+    </div>
+
+    <!-- Password -->
+    <div class="form-group">
+      <div class="input-icon-wrap">
+        <svg class="field-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round"
+                d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+        </svg>
+        <input
+          :type="showPw ? 'text' : 'password'"
+          class="form-input"
+          x-model="password"
+          placeholder="Password"
+          @keydown.enter="submit"
+          autocomplete="current-password"
+          :disabled="loading"
+          style="padding-right:44px;">
+        <button
+          type="button"
+          @click="showPw = !showPw"
+          style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;color:#6B7280;cursor:pointer;font-size:0.7rem;padding:4px;">
+          <span x-text="showPw ? 'Hide' : 'Show'"></span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Error message -->
+    <div x-show="error" style="display:none;background:#7F1D1D;border:1px solid #EF4444;border-radius:6px;padding:10px 12px;margin-bottom:14px;color:#FCA5A5;font-size:0.85rem;" x-text="error"></div>
+
+    <!-- Submit -->
+    <button
+      class="btn btn-primary"
+      style="width:100%;justify-content:center;margin-top:4px;"
+      @click="submit"
+      :disabled="loading || !username || !password">
+      <span x-show="!loading">Login</span>
+      <span x-show="loading" style="display:none;">Signing in…</span>
+    </button>
+
+    <!-- Forgot password -->
+    <div style="text-align:center;margin-top:16px;font-size:0.8rem;color:#6B7280;">
+      Forgot password? Click
+      <a href="#"
+         style="color:#F59E0B;text-decoration:none;"
+         onclick="document.getElementById('forgot-overlay').style.display='flex'; return false;">here</a>
+    </div>
+  </div>
+
+  <!-- Step 2: 2FA verification (Directors, Ops Manager, Accountant) -->
+  <div x-show="step === '2fa'" style="display:none;">
+    <div style="text-align:center;margin-bottom:20px;">
+      <div style="font-size:2rem;margin-bottom:8px;">🔐</div>
+      <p style="color:#D1D5DB;font-size:0.9rem;font-weight:600;margin:0 0 4px;">Two-Factor Authentication</p>
+      <p style="color:#6B7280;font-size:0.8rem;margin:0;">Enter the 6-digit code from your authenticator app.</p>
+    </div>
+    <div class="form-group">
+      <div class="input-icon-wrap">
+        <svg class="field-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round"
+                d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+        </svg>
+        <input
+          type="text"
+          class="form-input"
+          x-model="totpCode"
+          placeholder="000000"
+          maxlength="6"
+          inputmode="numeric"
+          pattern="[0-9]*"
+          @keydown.enter="submit2fa"
+          :disabled="loading"
+          style="letter-spacing:0.3em;font-size:1.1rem;text-align:center;">
+      </div>
+    </div>
+    <div x-show="error" style="display:none;background:#7F1D1D;border:1px solid #EF4444;border-radius:6px;padding:10px 12px;margin-bottom:14px;color:#FCA5A5;font-size:0.85rem;" x-text="error"></div>
+    <button
+      class="btn btn-primary"
+      style="width:100%;justify-content:center;"
+      @click="submit2fa"
+      :disabled="loading || totpCode.length !== 6">
+      <span x-show="!loading">Verify</span>
+      <span x-show="loading" style="display:none;">Verifying…</span>
+    </button>
+    <div style="text-align:center;margin-top:12px;">
+      <button type="button" style="background:none;border:none;color:#6B7280;font-size:0.8rem;cursor:pointer;"
+              @click="step='login'; error=''; totpCode=''; tempToken='';">← Back</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Forgot password modal ── -->
+<div id="forgot-overlay"
+     style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:200;align-items:center;justify-content:center;"
+     onclick="if(event.target===this) this.style.display='none';">
+  <div style="width:320px;max-width:95vw;border-radius:12px;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,0.6);">
+    <!-- Orange header -->
+    <div style="background:#F59E0B;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;">
+      <span style="color:#fff;font-weight:700;font-size:0.95rem;">Forgot Your Login Details?</span>
+      <button onclick="document.getElementById('forgot-overlay').style.display='none';"
+              style="background:none;border:none;color:#fff;cursor:pointer;font-size:1.1rem;line-height:1;padding:0;opacity:0.9;">✕</button>
+    </div>
+    <!-- White body -->
+    <div style="background:#fff;padding:24px 20px 28px;">
+      <p style="color:#374151;font-size:0.875rem;line-height:1.65;margin:0;">
+        If you have forgotten your password, username or email address,
+        kindly reach out to the operations manager
+      </p>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script>
+function loginForm() {
+  return {
+    step: 'login',
+    username: '',
+    password: '',
+    totpCode: '',
+    tempToken: '',
+    loading: false,
+    error: '',
+    showPw: false,
+
+    async submit() {
+      if (!this.username || !this.password) return;
+      this.loading = true;
+      this.error = '';
+      try {
+        const res = await fetch('/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: this.username, password: this.password })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          if (data.requiresTwoFactor) {
+            this.tempToken = data.tempToken;
+            this.step = '2fa';
+          } else {
+            localStorage.setItem('accessToken', data.accessToken);
+            localStorage.setItem('refreshToken', data.refreshToken);
+            window.location.href = '/dashboard';
+          }
+        } else {
+          this.error = data.message || 'Invalid credentials';
+        }
+      } catch {
+        this.error = 'Connection error — please try again';
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async submit2fa() {
+      if (this.totpCode.length !== 6) return;
+      this.loading = true;
+      this.error = '';
+      try {
+        const res = await fetch('/auth/2fa/verify', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + this.tempToken
+          },
+          body: JSON.stringify({ token: this.totpCode })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          localStorage.setItem('accessToken', data.accessToken);
+          localStorage.setItem('refreshToken', data.refreshToken);
+          window.location.href = '/dashboard';
+        } else {
+          this.error = data.message || 'Invalid 2FA code';
+          this.totpCode = '';
+        }
+      } catch {
+        this.error = 'Connection error — please try again';
+      } finally {
+        this.loading = false;
+      }
+    }
+  };
+}
+</script>
+
+</body>
+</html>

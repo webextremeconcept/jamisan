@@ -1,0 +1,74 @@
+<%
+/*
+ * tab-agents.ejs — Agent directory with search + state filter.
+ * Receives: rows (array from getAgents), states (array, optional)
+ */
+%>
+
+<%- include('./top-nav', { activeTab: 'agents' }) %>
+
+<div style="padding:12px 20px;border-bottom:1px solid #E5E7EB;display:flex;align-items:center;gap:12px;">
+  <strong style="font-size:0.8rem;letter-spacing:0.05em;color:#F59E0B;">AGENTS</strong>
+  <span style="font-size:0.8rem;color:#9CA3AF;"><%= rows.length %> agents</span>
+
+  <div style="margin-left:auto;display:flex;gap:8px;">
+    <input type="text" class="form-input" placeholder="Search agents..."
+           name="search" style="width:200px;padding:5px 10px;font-size:0.8rem;"
+           hx-get="/api/csr/agents"
+           hx-trigger="keyup changed delay:300ms"
+           hx-target="#page-content"
+           hx-swap="innerHTML"
+           hx-include="[name='agent_state_filter']">
+    <select class="form-select" name="agent_state_filter"
+            style="width:160px;padding:5px 8px;font-size:0.8rem;"
+            hx-get="/api/csr/agents"
+            hx-trigger="change"
+            hx-target="#page-content"
+            hx-swap="innerHTML"
+            hx-include="[name='search']">
+      <option value="">All States</option>
+      <% if (typeof states !== 'undefined' && states.length) { %>
+        <% states.forEach(function(s) { %>
+          <option value="<%= s.id %>"><%= s.name %></option>
+        <% }); %>
+      <% } %>
+    </select>
+  </div>
+</div>
+
+<div style="flex:1;overflow:auto;">
+<table id="order-table">
+  <thead>
+    <tr>
+      <th style="width:180px;">Name</th>
+      <th style="width:150px;">Contact</th>
+      <th style="width:130px;">Phone</th>
+      <th style="width:120px;">State</th>
+      <th style="width:100px;">Status</th>
+      <th style="width:80px;">Rating</th>
+      <th style="width:120px;">WhatsApp</th>
+    </tr>
+  </thead>
+  <tbody>
+    <% if (rows.length === 0) { %>
+      <tr><td colspan="7" style="text-align:center;padding:48px;color:#9CA3AF;font-style:italic;">No agents found.</td></tr>
+    <% } %>
+    <% rows.forEach(function(ag) { %>
+      <tr>
+        <td style="padding:0 8px;font-weight:600;"><%= ag.name %></td>
+        <td style="padding:0 8px;"><%= ag.contact_name || '—' %></td>
+        <td style="padding:0 8px;font-variant-numeric:tabular-nums;"><%= ag.phone || '—' %></td>
+        <td style="padding:0 8px;"><%= ag.state_name || '—' %></td>
+        <td style="padding:0 8px;"><%= ag.status || 'Active' %></td>
+        <td style="padding:0 8px;text-align:center;"><%= ag.ratings || '—' %></td>
+        <td style="padding:0 8px;">
+          <% if (ag.whatsapp_group_link) { %>
+            <a href="<%= ag.whatsapp_group_link %>" target="_blank" rel="noopener"
+               style="color:#F59E0B;font-size:0.78rem;text-decoration:none;">Group &rarr;</a>
+          <% } else { %>—<% } %>
+        </td>
+      </tr>
+    <% }); %>
+  </tbody>
+</table>
+</div>

@@ -1,0 +1,51 @@
+<%
+/*
+ * tab-contacts.ejs — Read-only staff directory.
+ * Receives: rows (array from getContacts)
+ */
+function fmtDate(d) {
+  if (!d) return 'Never';
+  return new Date(d).toLocaleDateString('en-NG', { day:'2-digit', month:'short', year:'2-digit' });
+}
+%>
+
+<%- include('./top-nav', { activeTab: 'contacts' }) %>
+
+<div style="padding:12px 20px;border-bottom:1px solid #E5E7EB;">
+  <strong style="font-size:0.8rem;letter-spacing:0.05em;color:#F59E0B;">CONTACTS</strong>
+  <span style="font-size:0.8rem;color:#9CA3AF;margin-left:12px;"><%= rows.length %> staff</span>
+</div>
+
+<div style="flex:1;overflow:auto;">
+<table id="order-table">
+  <thead>
+    <tr>
+      <th style="width:20px;"></th>
+      <th style="width:180px;">Name</th>
+      <th style="width:150px;">Role</th>
+      <th style="width:130px;">Phone</th>
+      <th style="width:180px;">Email</th>
+      <th style="width:100px;">On Break</th>
+      <th style="width:100px;">Last Login</th>
+    </tr>
+  </thead>
+  <tbody>
+    <% if (rows.length === 0) { %>
+      <tr><td colspan="7" style="text-align:center;padding:48px;color:#9CA3AF;font-style:italic;">No staff found.</td></tr>
+    <% } %>
+    <% rows.forEach(function(u) { %>
+      <tr>
+        <td style="padding:0 8px;text-align:center;">
+          <span style="display:inline-block;width:8px;height:8px;border-radius:50;background:<%= u.is_active ? '#10B981' : '#EF4444' %>;"></span>
+        </td>
+        <td style="padding:0 8px;font-weight:600;"><%= u.display_name || u.full_name %></td>
+        <td style="padding:0 8px;"><%= u.role_name %></td>
+        <td style="padding:0 8px;font-variant-numeric:tabular-nums;"><%= u.phone || '—' %></td>
+        <td style="padding:0 8px;font-size:0.78rem;"><%= u.email || '—' %></td>
+        <td style="padding:0 8px;"><%= u.is_on_break ? '☕ Yes' : '—' %></td>
+        <td style="padding:0 8px;white-space:nowrap;"><%= fmtDate(u.last_login_at) %></td>
+      </tr>
+    <% }); %>
+  </tbody>
+</table>
+</div>

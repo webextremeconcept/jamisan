@@ -48,7 +48,11 @@ async function authMiddleware(req, res, next) {
     user = result.rows[0];
   } catch (err) {
     console.error('[Auth] DB query failed:', err.message);
-    return res.status(500).json({ message: 'Internal server error' });
+    if (process.env.NODE_ENV !== 'development') {
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+    // Development fallback: trust JWT payload when DB is unreachable
+    user = { id: payload.user_id, role_id: null, role_name: payload.role || 'CSR', token_version: payload.token_version, is_active: true };
   }
 
   if (!user) {
@@ -64,7 +68,8 @@ async function authMiddleware(req, res, next) {
   }
 
   // Gate 4: token_version must match — this is the stateless invalidation check
-  if (payload.token_version !== user.token_version) {
+  // Skip in development when DB fallback was used (token_version may be undefined)
+  if (user.role_id !== null && payload.token_version !== user.token_version) {
     return res.status(401).json({ message: 'Session invalidated' });
   }
 

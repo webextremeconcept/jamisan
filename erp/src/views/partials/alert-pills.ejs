@@ -1,0 +1,32 @@
+<%
+/*
+ * alert-pills.ejs — hygiene alert pills shown at top of DATABASE view.
+ * Receives: counts (hygiene count object)
+ * Only renders pills for non-zero counts. Container #alert-pills uses
+ * CSS `&:empty { display:none }` so it auto-hides when all counts are 0.
+ */
+const pillDefs = [
+  { key: 'skipped',          label: 'Skipped',          count: Number(counts.skipped)          || 0 },
+  { key: 'no_comments',      label: 'No Comments',      count: Number(counts.no_comments)      || 0 },
+  { key: 'pending',          label: 'Pending',          count: Number(counts.pending)          || 0 },
+  { key: 'no_logistics_fee', label: 'No Logistics Fee', count: Number(counts.no_logistics_fee) || 0 },
+  { key: 'no_date_paid',     label: 'No Date Paid',     count: Number(counts.no_date_paid)     || 0 },
+  { key: 'abandoned',        label: 'Abandoned',        count: Number(counts.abandoned)        || 0 },
+  { key: 'try_again',        label: 'Try Again',        count: Number(counts.try_again)        || 0 },
+].filter(function(p) { return p.count > 0; });
+%>
+<% if (pillDefs.length > 0) { %>
+  <span style="color:#92400E;font-size:0.75rem;font-weight:600;align-self:center;white-space:nowrap;">
+    Needs attention:
+  </span>
+  <% pillDefs.forEach(function(p) { %>
+    <button class="alert-pill"
+            hx-get="/api/csr/orders?page=1&hygiene=<%= p.key %>"
+            hx-target="#order-table-container"
+            hx-swap="innerHTML"
+            hx-indicator="#grid-spinner">
+      <%= p.label %>
+      <span class="pill-count"><%= p.count %></span>
+    </button>
+  <% }); %>
+<% } %>

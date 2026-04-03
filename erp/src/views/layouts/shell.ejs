@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%= typeof title !== 'undefined' ? title + ' — ' : '' %>Jamisan ERP</title>
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- HTMX + json-enc extension -->
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
+  <script src="https://unpkg.com/htmx-ext-json-enc@2.0.1/json-enc.js"></script>
+
+  <!-- Alpine.js -->
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+  <!-- App styles -->
+  <link rel="stylesheet" href="/css/app.css">
+  <!-- Early JWT injection — must run before HTMX fires hx-trigger="load" -->
+  <script>
+    document.addEventListener('htmx:configRequest', function(e) {
+      var t = localStorage.getItem('accessToken');
+      if (t) e.detail.headers['Authorization'] = 'Bearer ' + t;
+    }, true);
+  </script>
+</head>
+<body hx-ext="json-enc" x-data data-on-break="<%= (locals.user && locals.user.is_on_break) ? 'true' : 'false' %>">
+
+<!-- App Shell -->
+<div id="app-shell"
+     x-data="{ get collapsed() { return $store.ui.sidebarCollapsed; } }">
+
+  <!-- ══════════════════════════════════════════ SIDEBAR ══════════════════════════════════════════ -->
+  <%- include('../partials/sidebar', { user: locals.user || {} }) %>
+
+  <!-- ══════════════════════════════════════════ MAIN CONTENT ══════════════════════════════════════ -->
+  <div id="main-content">
+
+    <!-- On Break amber bar -->
+    <div class="on-break-bar" :class="{ 'visible': $store.ui.onBreak }">
+      ☕ On Break — Orders are still being assigned. Click the coffee icon to resume.
+    </div>
+
+    <!-- Main content slot — auto-loads dashboard on page entry -->
+    <div id="page-content"
+         style="flex:1;overflow:hidden;display:flex;flex-direction:column;"
+         hx-get="/api/csr/dashboard"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+      <%- body %>
+    </div>
+
+  </div><!-- /#main-content -->
+
+</div><!-- /#app-shell -->
+
+<!-- ══════════════════════════════════════════ SLIDE-OUT PANEL ══════════════════════════════════ -->
+<div id="slide-out-overlay"
+     :class="{ 'open': $store.ui.panelOpen }"
+     @click="$store.ui.closePanel()">
+</div>
+
+<div id="slide-out-panel"
+     :class="{ 'open': $store.ui.panelOpen }"
+     @click.stop>
+  <div id="slide-out-body" style="display:flex;flex-direction:column;height:100%;">
+    <!-- Content injected by HTMX hx-target="#slide-out-body" -->
+    <div style="display:flex;align-items:center;justify-content:center;height:100%;color:#9CA3AF;font-size:0.875rem;">
+      Select an order to view details
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ CASH PAID MODAL ══════════════════════════════════ -->
+<div class="modal-overlay"
+     x-show="$store.ui.cashPaidModal"
+     x-data="cashPaidForm()"
+     style="display:none;"
+     @keydown.escape.window="$store.ui.cancelStatusChange()">
+  <div class="modal-card" @click.stop>
+    <div class="modal-title">Confirm Cash Payment</div>
+    <div class="modal-subtitle">Ensure payment is confirmed before proceeding. This is permanent.</div>
+
+    <div class="form-group">
+      <label class="form-label">Date Paid <span class="req">*</span></label>
+      <input type="date" class="form-input" x-model="datePaid" :max="today">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Agent <span class="req">*</span></label>
+      <select class="form-select" x-model="agentId"
+              hx-get="/api/csr/lookups/agents-by-state"
+              hx-trigger="load"
+              hx-target="#cash-paid-agent-options"
+              hx-swap="innerHTML">
+        <option value="">— Select Agent —</option>
+        <span id="cash-paid-agent-options"></span>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Logistics Fee (₦) <span class="req">*</span></label>
+      <input type="number" class="form-input" x-model="logisticsFee" placeholder="0" min="0" step="100">
+    </div>
+
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px;">
+      <button class="btn btn-ghost" @click="$store.ui.cancelStatusChange(); reset()">Cancel</button>
+      <button class="btn btn-primary"
+              :disabled="!datePaid || !agentId || logisticsFee === ''"
+              @click="confirm">
+        Confirm Cash Paid
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ FAILED/CANCELLED MODAL ══════════════════════════ -->
+<div class="modal-overlay"
+     x-show="$store.ui.failedModal"
+     x-data="failedForm()"
+     style="display:none;"
+     @keydown.escape.window="$store.ui.cancelStatusChange()">
+  <div class="modal-card" @click.stop>
+    <div class="modal-title">Log Failure Reason</div>
+    <div class="modal-subtitle">
+      Select the reason and add a mandatory comment before confirming.
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Failure Reason <span class="req">*</span></label>
+      <select class="form-select" x-model="reasonId"
+              hx-get="/api/csr/lookups/failure-reasons-options"
+              hx-trigger="load"
+              hx-swap="innerHTML append">
+        <option value="">— Select Reason —</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Comment <span class="req">*</span></label>
+      <textarea class="form-textarea" x-model="comment" placeholder="Describe what happened (min 10 characters)…" rows="3"></textarea>
+      <span style="font-size:0.75rem;color:#9CA3AF;" x-text="comment.length + ' / 10 min'"></span>
+    </div>
+
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px;">
+      <button class="btn btn-ghost" @click="$store.ui.cancelStatusChange(); reset()">Cancel</button>
+      <button class="btn btn-danger"
+              :disabled="!reasonId || comment.length < 10"
+              @click="confirm">
+        Confirm
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ TOAST CONTAINER ══════════════════════════════════ -->
+<div id="toast-container"></div>
+
+<!-- App JS (loads after Alpine) -->
+<script src="/js/app.js"></script>
+
+<script>
+/* ── Cash Paid modal form component ── */
+function cashPaidForm() {
+  return {
+    datePaid: '',
+    agentId: '',
+    logisticsFee: '',
+    get today() {
+      return new Date().toISOString().split('T')[0];
+    },
+    confirm() {
+      Alpine.store('ui').confirmCashPaid(this.datePaid, this.agentId, this.logisticsFee);
+      this.reset();
+    },
+    reset() {
+      this.datePaid = '';
+      this.agentId = '';
+      this.logisticsFee = '';
+    }
+  };
+}
+
+/* ── Failed/Cancelled modal form component ── */
+function failedForm() {
+  return {
+    reasonId: '',
+    comment: '',
+    confirm() {
+      const change = Alpine.store('ui').pendingStatusChange;
+      if (!change) return;
+      Alpine.store('ui').confirmFailed(change.newStatus, this.reasonId, this.comment);
+      this.reset();
+    },
+    reset() {
+      this.reasonId = '';
+      this.comment = '';
+    }
+  };
+}
+</script>
+
+</body>
+</html>

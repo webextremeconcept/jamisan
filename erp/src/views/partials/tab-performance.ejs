@@ -1,0 +1,126 @@
+<%
+/*
+ * tab-performance.ejs — CSR personal stats + team leaderboard.
+ * Receives: live (personal stats), history (monthly), leaderboard (CSR-only), userId
+ * Commission amounts hidden from leaderboard view.
+ */
+function fmtMoney(n) {
+  if (n == null) return '\u20A60';
+  return '\u20A6' + Number(n).toLocaleString();
+}
+const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const now = new Date();
+const currentMonth = monthNames[now.getMonth()] + ' ' + now.getFullYear();
+%>
+
+<%- include('./top-nav', { activeTab: 'performance' }) %>
+
+<div style="flex:1;overflow:auto;padding:20px;">
+
+  <!-- ══ Personal Stats ══ -->
+  <div style="margin-bottom:24px;">
+    <div style="font-size:0.75rem;font-weight:600;color:#9CA3AF;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:12px;">
+      Your Performance — <%= currentMonth %>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+      <div class="stat-card">
+        <div class="stat-value"><%= live.total_orders || 0 %></div>
+        <div class="stat-label">Total Orders</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value"><%= live.cash_paid_orders || 0 %></div>
+        <div class="stat-label">Cash Paid</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value"><%= live.conversion_rate || 0 %>%</div>
+        <div class="stat-label">Payment Rate</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value"><%= fmtMoney(live.total_revenue) %></div>
+        <div class="stat-label">Revenue</div>
+      </div>
+    </div>
+  </div>
+
+  <% if (history && history.length > 0) { %>
+  <!-- ══ Commission History (personal, not on leaderboard) ══ -->
+  <div style="margin-bottom:24px;">
+    <div style="font-size:0.75rem;font-weight:600;color:#9CA3AF;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:12px;">
+      Monthly History
+    </div>
+    <table id="order-table" style="width:100%;">
+      <thead>
+        <tr>
+          <th>Month</th>
+          <th style="text-align:right;">Orders</th>
+          <th style="text-align:right;">Paid</th>
+          <th style="text-align:right;">Rate</th>
+          <th style="text-align:right;">Commission</th>
+          <th>Level</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% history.forEach(function(h) { %>
+          <tr>
+            <td style="padding:0 8px;"><%= monthNames[h.month - 1] %> <%= h.year %></td>
+            <td style="padding:0 8px;text-align:right;"><%= h.total_orders %></td>
+            <td style="padding:0 8px;text-align:right;"><%= h.total_units_paid %></td>
+            <td style="padding:0 8px;text-align:right;"><%= h.payment_rate %>%</td>
+            <td style="padding:0 8px;text-align:right;font-weight:600;"><%= fmtMoney(h.total_commission) %></td>
+            <td style="padding:0 8px;"><%= h.csr_level_at_time || '—' %></td>
+          </tr>
+        <% }); %>
+      </tbody>
+    </table>
+  </div>
+  <% } %>
+
+  <!-- ══ Team Leaderboard (CSR role only, no commission amounts) ══ -->
+  <div>
+    <div style="font-size:0.75rem;font-weight:600;color:#9CA3AF;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:12px;">
+      Team Leaderboard — <%= currentMonth %>
+    </div>
+
+    <% if (!leaderboard || leaderboard.length === 0) { %>
+      <div style="color:#9CA3AF;font-size:0.8rem;font-style:italic;">No data yet this month.</div>
+    <% } else { %>
+
+      <!-- Top 3 podium -->
+      <div style="display:flex;gap:12px;margin-bottom:16px;">
+        <% leaderboard.slice(0, 3).forEach(function(csr, idx) { %>
+          <div class="podium-card <%= idx === 0 ? 'podium-gold' : idx === 1 ? 'podium-silver' : 'podium-bronze' %>">
+            <div class="podium-rank"><%= idx + 1 %></div>
+            <div class="podium-name"><%= csr.display_name %></div>
+            <div class="podium-stat"><%= csr.cash_paid_orders %> paid / <%= csr.total_orders %> orders</div>
+            <div class="podium-rate"><%= csr.conversion_rate || 0 %>%</div>
+          </div>
+        <% }); %>
+      </div>
+
+      <!-- Full ranked list -->
+      <table id="order-table" style="width:100%;">
+        <thead>
+          <tr>
+            <th style="width:50px;">#</th>
+            <th>Name</th>
+            <th style="text-align:right;">Orders</th>
+            <th style="text-align:right;">Cash Paid</th>
+            <th style="text-align:right;">Rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% leaderboard.forEach(function(csr, idx) { %>
+            <tr style="<%= csr.id === userId ? 'background:#FFFBEB;font-weight:600;' : '' %>">
+              <td style="padding:0 8px;text-align:center;font-weight:700;color:#9CA3AF;"><%= idx + 1 %></td>
+              <td style="padding:0 8px;"><%= csr.display_name %></td>
+              <td style="padding:0 8px;text-align:right;"><%= csr.total_orders %></td>
+              <td style="padding:0 8px;text-align:right;"><%= csr.cash_paid_orders %></td>
+              <td style="padding:0 8px;text-align:right;"><%= csr.conversion_rate || 0 %>%</td>
+            </tr>
+          <% }); %>
+        </tbody>
+      </table>
+    <% } %>
+  </div>
+
+</div>

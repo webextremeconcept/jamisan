@@ -1,0 +1,158 @@
+<%
+/*
+ * order-row.ejs — single <tr> for the order grid.
+ * Receives: o (order object from getOrderGrid JOIN query)
+ * Used by: order-grid.ejs (<%- include %>) AND as HTMX outerHTML swap target
+ * after updateOrder.
+ */
+
+// Traffic light row colour (Day 3 spec)
+let rowClass = '';
+if (o.is_banned) {
+  rowClass = 'row-red';
+} else if (Number(o.total_purchases) > 0) {
+  rowClass = 'row-green';   // VIP — has at least one Cash Paid order
+} else if (o.customer_id && Number(o.total_orders) > 1) {
+  rowClass = 'row-yellow';  // Returning customer, no Cash Paid yet
+}
+
+function fmtDate(d) {
+  if (!d) return '';
+  return new Date(d).toLocaleDateString('en-NG', { day: '2-digit', month: 'short', year: '2-digit' });
+}
+
+function fmtMoney(n) {
+  if (n == null || n === '') return '';
+  return '\u20A6' + Number(n).toLocaleString();
+}
+
+const statusGroups = [
+  {
+    label: 'Active/Positive',
+    statuses: ['Interested', 'Pending', 'Scheduled', 'Committed Immediate', 'Committed Scheduled', 'Cash Paid'],
+  },
+  {
+    label: 'Unreachable',
+    statuses: ['Not Picking Calls', 'Switched Off', 'Will Call Me Back', 'To Call Back',
+               'Direct WhatsApp', 'Not Reachable', 'Invalid Number', 'No Phone Number', 'Ignored Agents Call'],
+  },
+  {
+    label: 'Failed/Negative',
+    statuses: ['Failed', 'Cancelled', 'Returned', 'Banned', "Didn't Order", 'Got It Elsewhere', 'Not Ready to Pay'],
+  },
+  {
+    label: 'Conditional',
+    statuses: ['Haggling', 'Changed Location', 'Location Requires Waybill', 'Out of the Way', 'Out of Stock', 'From Social Media'],
+  },
+  {
+    label: 'System/Admin',
+    statuses: ['Test', 'Abandoned', 'CSR Skipped', 'Duplicate Order'],
+  },
+];
+%>
+<tr id="order-row-<%= o.id %>" class="order-row <%= rowClass %>">
+
+  <%/* 1 — Row number */%>
+  <td style="width:44px;padding:0 8px;text-align:right;color:#9CA3AF;font-size:0.75rem;">
+    <%= o.row_num %>
+  </td>
+
+  <%/* 2 — Order ID (opens slide-out) */%>
+  <td style="width:110px;padding:0 8px;">
+    <a class="order-id-link"
+       hx-get="/api/csr/orders/<%= o.id %>"
+       hx-target="#slide-out-body"
+       hx-swap="innerHTML"
+       @click="$store.ui.panelOpen = true; $store.ui.currentOrderId = <%= o.id %>">
+      <%= o.order_id %>
+    </a>
+  </td>
+
+  <%/* 3 — CSR */%>
+  <td style="width:100px;padding:0 8px;"><%= o.csr_name || '—' %></td>
+
+  <%/* 4 — Date ordered */%>
+  <td style="width:90px;padding:0 8px;white-space:nowrap;"><%= fmtDate(o.ordered_at) %></td>
+
+  <%/* 5 — DFO (days from order) */%>
+  <td style="width:46px;padding:0 8px;text-align:center;">
+    <% const dfo = o.dfo != null ? Number(o.dfo) : null; %>
+    <% if (dfo !== null) { %>
+      <span style="<%= dfo >= 7 ? 'color:#EF4444;font-weight:600;' : dfo >= 3 ? 'color:#F59E0B;' : '' %>">
+        <%= dfo %>
+      </span>
+    <% } else { %>—<% } %>
+  </td>
+
+  <%/* 6 — Customer name */%>
+  <td style="width:150px;padding:0 8px;max-width:150px;overflow:hidden;text-overflow:ellipsis;">
+    <%= o.customer_name || '—' %>
+  </td>
+
+  <%/* 7 — Phone number */%>
+  <td style="width:130px;padding:0 8px;font-variant-numeric:tabular-nums;">
+    <%= o.phone_number || '—' %>
+  </td>
+
+  <%/* 8 — Product */%>
+  <td style="width:160px;padding:0 8px;max-width:160px;overflow:hidden;text-overflow:ellipsis;">
+    <%= o.product_name || '—' %>
+  </td>
+
+  <%/* 9 — Colour */%>
+  <td style="width:80px;padding:0 8px;"><%= o.colour || '—' %></td>
+
+  <%/* 10 — Price */%>
+  <td style="width:90px;padding:0 8px;text-align:right;font-variant-numeric:tabular-nums;">
+    <%= fmtMoney(o.price) || '—' %>
+  </td>
+
+  <%/* 11 — State */%>
+  <td style="width:100px;padding:0 8px;"><%= o.state_name || '—' %></td>
+
+  <%/* 12 — LGA */%>
+  <td style="width:100px;padding:0 8px;"><%= o.lga_name || '—' %></td>
+
+  <%/* 13 — Agent */%>
+  <td style="width:150px;padding:0 8px;max-width:150px;overflow:hidden;text-overflow:ellipsis;">
+    <%= o.agent_name || '—' %>
+  </td>
+
+  <%/* 14 — Status dropdown — NO hx-* on select; Alpine intercepts change */%>
+  <td style="width:175px;padding:0 4px;">
+    <select class="inline-edit"
+            name="status"
+            data-current-status="<%= o.status %>"
+            x-on:change="handleStatusChange($event, <%= o.id %>, this.dataset.currentStatus, this)"
+            style="width:100%;font-size:0.78rem;">
+      <% statusGroups.forEach(function(grp) { %>
+        <optgroup label="<%= grp.label %>">
+          <% grp.statuses.forEach(function(s) { %>
+            <option value="<%= s %>"<%= o.status === s ? ' selected' : '' %>><%= s %></option>
+          <% }); %>
+        </optgroup>
+      <% }); %>
+    </select>
+  </td>
+
+  <%/* 15 — Comments inline edit */%>
+  <td style="min-width:180px;padding:0 4px;">
+    <input type="text"
+           class="inline-edit"
+           name="comments"
+           value="<%= o.comments || '' %>"
+           placeholder="Add comment…"
+           hx-patch="/api/csr/orders/<%= o.id %>"
+           hx-target="closest tr"
+           hx-swap="outerHTML"
+           hx-trigger="change"
+           style="width:100%;min-width:180px;">
+  </td>
+
+  <%/* 16 — Date paid */%>
+  <td style="width:90px;padding:0 8px;white-space:nowrap;"><%= fmtDate(o.date_paid) || '—' %></td>
+
+  <%/* 17 — Sex */%>
+  <td style="width:60px;padding:0 8px;"><%= o.sex || '—' %></td>
+
+</tr>

@@ -1,0 +1,44 @@
+<%
+/*
+ * customer-intel.ejs — Customer order feed for the right intelligence panel.
+ * Receives: customer (object or null), orders (array), currentOrderId
+ * Lazy-loaded via HTMX into #panel-order-feed.
+ */
+function fmtDate(d) {
+  if (!d) return '';
+  return new Date(d).toLocaleDateString('en-NG', { day:'2-digit', month:'short', year:'2-digit' });
+}
+function fmtMoney(n) {
+  if (n == null) return '';
+  return '\u20A6' + Number(n).toLocaleString();
+}
+%>
+
+<% if (!customer) { %>
+  <div style="padding:12px;color:#9CA3AF;font-size:0.8rem;font-style:italic;">
+    No customer profile linked to this order.
+  </div>
+<% } else { %>
+  <% if (orders.length === 0) { %>
+    <div style="padding:12px;color:#9CA3AF;font-size:0.8rem;font-style:italic;">
+      No other orders found.
+    </div>
+  <% } else { %>
+    <% orders.forEach(function(ord) { %>
+      <div class="order-feed-item <%= ord.id === currentOrderId ? 'current' : '' %>">
+        <div class="ofi-top">
+          <span class="ofi-id"><%= ord.order_id %></span>
+          <span class="ofi-status"><%= ord.status %></span>
+        </div>
+        <div class="ofi-bottom">
+          <span><%= fmtDate(ord.ordered_at) %></span>
+          <span><%= fmtMoney(ord.price) %></span>
+          <span><%= ord.product_name || '' %></span>
+        </div>
+        <% if (ord.comments) { %>
+          <div class="ofi-comment"><%= ord.comments %></div>
+        <% } %>
+      </div>
+    <% }); %>
+  <% } %>
+<% } %>
