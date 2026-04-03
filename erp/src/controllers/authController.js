@@ -171,11 +171,12 @@ async function checkAndSendLoginAlert(queryEmail, displayName) {
 // POST /auth/login
 // ============================================================================
 async function login(req, res) {
-  const { email, password } = req.body;
+  const { email, username, password } = req.body;
+  const identifier = email || username;
   const ip = getClientIp(req);
 
-  if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
-    return res.status(400).json({ message: 'Email and password are required' });
+  if (!identifier || !password || typeof identifier !== 'string' || typeof password !== 'string') {
+    return res.status(400).json({ message: 'Email/username and password are required' });
   }
 
   const userResult = await pool.query(
@@ -184,17 +185,17 @@ async function login(req, res) {
             u.failed_login_attempts, u.locked_until
      FROM users u
      JOIN roles r ON r.id = u.role_id
-     WHERE u.email = $1`,
-    [email]
+     WHERE u.email = $1 OR u.username = $1`,
+    [identifier]
   );
 
   const user = userResult.rows[0];
 
-  // Unknown email — run dummy bcrypt to prevent timing-based enumeration
+  // Unknown user — run dummy bcrypt to prevent timing-based enumeration
   if (!user) {
     await bcrypt.compare(password, DUMMY_HASH);
-    await logAudit(null, 'login_failed', { ipAddress: ip, newValue: email });
-    await checkAndSendLoginAlert(email, email);
+    await logAudit(null, 'login_failed', { ipAddress: ip, newValue: identifier });
+    await checkAndSendLoginAlert(identifier, identifier);
     return res.status(401).json({ message: 'Invalid email or password' });
   }
 
