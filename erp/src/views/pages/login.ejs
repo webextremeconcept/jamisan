@@ -174,12 +174,13 @@ function loginForm() {
         });
         const data = await res.json();
         if (res.ok) {
-          if (data.requiresTwoFactor) {
-            this.tempToken = data.tempToken;
+          if (data.requires_2fa || data.requires_2fa_setup) {
+            this.tempToken = data.temp_token;
             this.step = '2fa';
           } else {
-            localStorage.setItem('accessToken', data.accessToken);
-            localStorage.setItem('refreshToken', data.refreshToken);
+            localStorage.setItem('accessToken', data.access_token);
+            localStorage.setItem('refreshToken', data.refresh_token);
+            console.log('[Login Debug] accessToken stored:', localStorage.getItem('accessToken') ? 'YES' : 'NO');
             window.location.href = '/dashboard';
           }
         } else {
@@ -199,16 +200,14 @@ function loginForm() {
       try {
         const res = await fetch('/auth/2fa/verify', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer ' + this.tempToken
-          },
-          body: JSON.stringify({ token: this.totpCode })
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ temp_token: this.tempToken, totp_code: this.totpCode })
         });
         const data = await res.json();
         if (res.ok) {
-          localStorage.setItem('accessToken', data.accessToken);
-          localStorage.setItem('refreshToken', data.refreshToken);
+          localStorage.setItem('accessToken', data.access_token);
+          localStorage.setItem('refreshToken', data.refresh_token);
+          console.log('[Login Debug] accessToken stored after 2FA:', localStorage.getItem('accessToken') ? 'YES' : 'NO');
           window.location.href = '/dashboard';
         } else {
           this.error = data.message || 'Invalid 2FA code';

@@ -10,6 +10,7 @@
     // Attach Bearer token to every HTMX request
     document.addEventListener('htmx:configRequest', function(event) {
       var token = localStorage.getItem('accessToken');
+      console.log('[HTMX Debug] accessToken from localStorage:', token ? 'FOUND: ' + token.substring(0, 20) + '...' : 'NOT FOUND');
       if (token) {
         event.detail.headers['Authorization'] = 'Bearer ' + token;
       }

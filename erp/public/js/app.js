@@ -51,13 +51,13 @@ function startTokenRefresh() {
       const res = await fetch('/auth/refresh', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken })
+        body: JSON.stringify({ refresh_token: refreshToken })
       });
       if (res.ok) {
         const data = await res.json();
-        localStorage.setItem('accessToken', data.accessToken);
-        if (data.refreshToken) {
-          localStorage.setItem('refreshToken', data.refreshToken);
+        localStorage.setItem('accessToken', data.access_token);
+        if (data.refresh_token) {
+          localStorage.setItem('refreshToken', data.refresh_token);
         }
       } else {
         clearInterval(refreshTimer);
