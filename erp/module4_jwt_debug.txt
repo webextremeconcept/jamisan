@@ -1,0 +1,745 @@
+=== FILE: src/views/layouts/shell.ejs ===
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%= typeof title !== 'undefined' ? title + ' — ' : '' %>Jamisan ERP</title>
+
+  <!-- JWT injection — MUST be registered before HTMX loads so hx-trigger="load" gets the token -->
+  <script>
+    document.addEventListener('htmx:configRequest', function(event) {
+      var token = localStorage.getItem('accessToken');
+      if (token) {
+        event.detail.headers['Authorization'] = 'Bearer ' + token;
+      }
+    });
+  </script>
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- HTMX + json-enc extension -->
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
+  <script src="https://unpkg.com/htmx-ext-json-enc@2.0.1/json-enc.js"></script>
+
+  <!-- Alpine.js -->
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+  <!-- App styles -->
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body hx-ext="json-enc" x-data data-on-break="<%= (locals.user && locals.user.is_on_break) ? 'true' : 'false' %>">
+
+<!-- App Shell -->
+<div id="app-shell"
+     x-data="{ get collapsed() { return $store.ui.sidebarCollapsed; } }">
+
+  <!-- ══════════════════════════════════════════ SIDEBAR ══════════════════════════════════════════ -->
+  <%- include('../partials/sidebar', { user: locals.user || {} }) %>
+
+  <!-- ══════════════════════════════════════════ MAIN CONTENT ══════════════════════════════════════ -->
+  <div id="main-content">
+
+    <!-- On Break amber bar -->
+    <div class="on-break-bar" :class="{ 'visible': $store.ui.onBreak }">
+      ☕ On Break — Orders are still being assigned. Click the coffee icon to resume.
+    </div>
+
+    <!-- Main content slot — auto-loads dashboard on page entry -->
+    <div id="page-content"
+         style="flex:1;overflow:hidden;display:flex;flex-direction:column;"
+         hx-get="/api/csr/dashboard"
+         hx-trigger="load delay:100ms"
+         hx-swap="innerHTML">
+      <%- body %>
+    </div>
+
+  </div><!-- /#main-content -->
+
+</div><!-- /#app-shell -->
+
+<!-- ══════════════════════════════════════════ ORDER POPUP PANEL ═════════════════════════════════ -->
+<div id="slide-out-overlay"
+     @click="$store.ui.closePanel()"
+     style="display:none;">
+  <div id="slide-out-panel" @click.stop>
+    <div id="slide-out-body" style="display:flex;flex-direction:column;height:100%;">
+      <div style="display:flex;align-items:center;justify-content:center;height:100%;color:#9CA3AF;font-size:0.875rem;">
+        Select an order to view details
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ CASH PAID MODAL ══════════════════════════════════ -->
+<div class="modal-overlay"
+     x-show="$store.ui.cashPaidModal"
+     x-data="cashPaidForm()"
+     style="display:none;"
+     @keydown.escape.window="$store.ui.cancelStatusChange()">
+  <div class="modal-card" @click.stop>
+    <div class="modal-title">Confirm Cash Payment</div>
+    <div class="modal-subtitle">Ensure payment is confirmed before proceeding. This is permanent.</div>
+
+    <div class="form-group">
+      <label class="form-label">Date Paid <span class="req">*</span></label>
+      <input type="date" class="form-input" x-model="datePaid" :max="today">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Agent <span class="req">*</span></label>
+      <select class="form-select" x-model="agentId"
+              hx-get="/api/csr/lookups/agents-by-state"
+              hx-trigger="load"
+              hx-target="#cash-paid-agent-options"
+              hx-swap="innerHTML">
+        <option value="">— Select Agent —</option>
+        <span id="cash-paid-agent-options"></span>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Logistics Fee (₦) <span class="req">*</span></label>
+      <input type="number" class="form-input" x-model="logisticsFee" placeholder="0" min="0" step="100">
+    </div>
+
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px;">
+      <button class="btn btn-ghost" @click="$store.ui.cancelStatusChange(); reset()">Cancel</button>
+      <button class="btn btn-primary"
+              :disabled="!datePaid || !agentId || logisticsFee === ''"
+              @click="confirm">
+        Confirm Cash Paid
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ FAILED/CANCELLED MODAL ══════════════════════════ -->
+<div class="modal-overlay"
+     x-show="$store.ui.failedModal"
+     x-data="failedForm()"
+     style="display:none;"
+     @keydown.escape.window="$store.ui.cancelStatusChange()">
+  <div class="modal-card" @click.stop>
+    <div class="modal-title">Log Failure Reason</div>
+    <div class="modal-subtitle">
+      Select the reason and add a mandatory comment before confirming.
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Failure Reason <span class="req">*</span></label>
+      <select class="form-select" x-model="reasonId"
+              hx-get="/api/csr/lookups/failure-reasons-options"
+              hx-trigger="load"
+              hx-swap="innerHTML append">
+        <option value="">— Select Reason —</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Comment <span class="req">*</span></label>
+      <textarea class="form-textarea" x-model="comment" placeholder="Describe what happened (min 10 characters)…" rows="3"></textarea>
+      <span style="font-size:0.75rem;color:#9CA3AF;" x-text="comment.length + ' / 10 min'"></span>
+    </div>
+
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px;">
+      <button class="btn btn-ghost" @click="$store.ui.cancelStatusChange(); reset()">Cancel</button>
+      <button class="btn btn-danger"
+              :disabled="!reasonId || comment.length < 10"
+              @click="confirm">
+        Confirm
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ TOAST CONTAINER ══════════════════════════════════ -->
+<div id="toast-container"></div>
+
+<!-- App JS (loads after Alpine) -->
+<script src="/js/app.js"></script>
+
+<script>
+/* ── Cash Paid modal form component ── */
+function cashPaidForm() {
+  return {
+    datePaid: '',
+    agentId: '',
+    logisticsFee: '',
+    get today() {
+      return new Date().toISOString().split('T')[0];
+    },
+    confirm() {
+      Alpine.store('ui').confirmCashPaid(this.datePaid, this.agentId, this.logisticsFee);
+      this.reset();
+    },
+    reset() {
+      this.datePaid = '';
+      this.agentId = '';
+      this.logisticsFee = '';
+    }
+  };
+}
+
+/* ── Failed/Cancelled modal form component ── */
+function failedForm() {
+  return {
+    reasonId: '',
+    comment: '',
+    confirm() {
+      const change = Alpine.store('ui').pendingStatusChange;
+      if (!change) return;
+      Alpine.store('ui').confirmFailed(change.newStatus, this.reasonId, this.comment);
+      this.reset();
+    },
+    reset() {
+      this.reasonId = '';
+      this.comment = '';
+    }
+  };
+}
+</script>
+
+</body>
+</html>
+
+=== FILE: public/js/app.js ===
+/* =====================================================
+   Jamisan ERP — Client-Side JavaScript
+   JWT bridge, Alpine stores, clipboard, toast, auth guard
+   ===================================================== */
+
+'use strict';
+
+/* ── Auth guard: redirect to /login if no token ── */
+(function authGuard() {
+  const publicPaths = ['/login', '/'];
+  if (!publicPaths.includes(window.location.pathname)) {
+    const token = localStorage.getItem('accessToken');
+    if (!token) {
+      window.location.href = '/login';
+    }
+  }
+})();
+
+/* ── HTMX: inject JWT on every request ── */
+document.body.addEventListener('htmx:configRequest', (event) => {
+  const token = localStorage.getItem('accessToken');
+  if (token) {
+    event.detail.headers['Authorization'] = 'Bearer ' + token;
+  }
+});
+
+/* ── HTMX: handle 401 — token expired or invalidated ── */
+document.body.addEventListener('htmx:responseError', (event) => {
+  if (event.detail.xhr.status === 401) {
+    localStorage.removeItem('accessToken');
+    localStorage.removeItem('refreshToken');
+    window.location.href = '/login';
+  }
+});
+
+/* ── HTMX: handle network errors ── */
+document.body.addEventListener('htmx:sendError', () => {
+  showToast('Network error — check your connection', 'error');
+});
+
+/* ── HTMX: initialize Alpine on swapped content ── */
+document.body.addEventListener('htmx:afterSwap', (event) => {
+  if (window.Alpine) {
+    Alpine.initTree(event.detail.target);
+  }
+});
+
+/* ── HTMX: HX-Trigger toast — server sends { showToast: { message, type } } ── */
+document.body.addEventListener('showToast', (e) => {
+  const { message, type } = e.detail || {};
+  if (message) showToast(message, type || 'error');
+});
+
+/* ── Proactive token refresh: every 13 minutes ── */
+/* Access token expires at 15 min; we refresh proactively to avoid mid-request expiry */
+let refreshTimer = null;
+function startTokenRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(async () => {
+    const refreshToken = localStorage.getItem('refreshToken');
+    if (!refreshToken) {
+      window.location.href = '/login';
+      return;
+    }
+    try {
+      const res = await fetch('/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        localStorage.setItem('accessToken', data.accessToken);
+        if (data.refreshToken) {
+          localStorage.setItem('refreshToken', data.refreshToken);
+        }
+      } else {
+        clearInterval(refreshTimer);
+        localStorage.removeItem('accessToken');
+        localStorage.removeItem('refreshToken');
+        window.location.href = '/login';
+      }
+    } catch {
+      // Silent fail — next interval will retry
+    }
+  }, 13 * 60 * 1000);
+}
+
+if (localStorage.getItem('accessToken')) {
+  startTokenRefresh();
+}
+
+/* ── Toast system ── */
+function showToast(message, type = 'info') {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+  const toast = document.createElement('div');
+  toast.className = 'toast toast-' + type;
+  toast.textContent = message;
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(-8px)';
+    toast.style.transition = 'opacity 0.2s, transform 0.2s';
+    setTimeout(() => toast.remove(), 220);
+  }, 3000);
+}
+window.showToast = showToast;
+
+/* ── Copy Order to clipboard ── */
+async function copyOrderText(orderId) {
+  try {
+    const token = localStorage.getItem('accessToken');
+    const res = await fetch('/api/csr/orders/' + orderId + '/copy-text', {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (!res.ok) throw new Error('Failed to fetch copy text');
+    const data = await res.json();
+    await navigator.clipboard.writeText(data.text);
+    showToast('Order copied to clipboard ✓', 'success');
+  } catch {
+    showToast('Could not copy — check browser permissions', 'error');
+  }
+}
+window.copyOrderText = copyOrderText;
+
+/* ── Status change handler (Alpine calls this) ── */
+/* Decides whether to open a modal or fire HTMX directly */
+function handleStatusChange(event, orderId, currentStatus, selectEl) {
+  const newStatus = event.target.value;
+  if (newStatus === currentStatus) return;
+
+  // Store the pending change so modals can read it
+  if (window.Alpine) {
+    Alpine.store('ui').pendingStatusChange = { orderId, newStatus, oldStatus: currentStatus, selectEl };
+  }
+
+  if (newStatus === 'Cash Paid') {
+    event.target.value = currentStatus; // Reset dropdown
+    if (window.Alpine) Alpine.store('ui').cashPaidModal = true;
+    return;
+  }
+
+  if (['Failed', 'Cancelled', 'Returned'].includes(newStatus)) {
+    event.target.value = currentStatus; // Reset dropdown
+    if (window.Alpine) Alpine.store('ui').failedModal = true;
+    return;
+  }
+
+  // No modal needed — fire HTMX directly
+  const tr = selectEl.closest('tr');
+  htmx.ajax('PATCH', '/api/csr/orders/' + orderId, {
+    source: tr,
+    swap: 'outerHTML',
+    target: tr,
+    values: { status: newStatus }
+  });
+}
+window.handleStatusChange = handleStatusChange;
+
+/* ── Logout — server call FIRST (increments token_version), then clear localStorage ── */
+async function logout() {
+  const token = localStorage.getItem('accessToken');
+  try {
+    // Must await: server increments token_version to invalidate this token on all devices
+    await fetch('/auth/logout', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }
+    });
+  } catch { /* network error on logout — still clear local tokens and redirect */ }
+  // Only clear after server confirms (or after error — token may still expire naturally)
+  localStorage.removeItem('accessToken');
+  localStorage.removeItem('refreshToken');
+  window.location.href = '/login';
+}
+window.logout = logout;
+
+/* ── Alpine.js global stores ── */
+document.addEventListener('alpine:init', () => {
+  Alpine.store('ui', {
+    sidebarCollapsed: false,
+    panelOpen: false,
+    currentOrderId: null,
+    panelRightCollapsed: false,
+    cashPaidModal: false,
+    failedModal: false,
+    onBreak: document.body.dataset.onBreak === 'true',
+    hasUnsavedChanges: false,
+    pendingStatusChange: null,   // { orderId, newStatus, oldStatus, selectEl }
+
+    toggleSidebar() {
+      this.sidebarCollapsed = !this.sidebarCollapsed;
+    },
+    openPanel(orderId) {
+      this.currentOrderId = orderId;
+      this.panelOpen = true;
+    },
+    closePanel() {
+      this.panelOpen = false;
+      this.currentOrderId = null;
+      this.hasUnsavedChanges = false;
+    },
+    toggleRightPanel() {
+      this.panelRightCollapsed = !this.panelRightCollapsed;
+    },
+    cancelStatusChange() {
+      // Reset the dropdown if user cancels a modal
+      const change = this.pendingStatusChange;
+      if (change && change.selectEl) {
+        change.selectEl.value = change.oldStatus;
+      }
+      this.pendingStatusChange = null;
+      this.cashPaidModal = false;
+      this.failedModal = false;
+    },
+    confirmCashPaid(datePaid, agentId, logisticsFee) {
+      const change = this.pendingStatusChange;
+      if (!change) return;
+      const tr = change.selectEl ? change.selectEl.closest('tr') : null;
+      htmx.ajax('PATCH', '/api/csr/orders/' + change.orderId, {
+        source: tr || document.body,
+        swap: tr ? 'outerHTML' : 'none',
+        target: tr || document.body,
+        values: {
+          status: 'Cash Paid',
+          date_paid: datePaid,
+          agent_id: agentId,
+          logistics_fee: logisticsFee
+        }
+      });
+      this.cashPaidModal = false;
+      this.pendingStatusChange = null;
+    },
+    confirmFailed(newStatus, failureReasonId, comments) {
+      const change = this.pendingStatusChange;
+      if (!change) return;
+      const tr = change.selectEl ? change.selectEl.closest('tr') : null;
+      htmx.ajax('PATCH', '/api/csr/orders/' + change.orderId, {
+        source: tr || document.body,
+        swap: tr ? 'outerHTML' : 'none',
+        target: tr || document.body,
+        values: {
+          status: newStatus,
+          failure_reason_id: failureReasonId,
+          comments
+        }
+      });
+      this.failedModal = false;
+      this.pendingStatusChange = null;
+    }
+  });
+
+  Alpine.store('hygiene', {
+    skipped: 0,
+    no_comments: 0,
+    pending: 0,
+    no_logistics_fee: 0,
+    no_date_paid: 0,
+    abandoned: 0,
+    try_again: 0,
+    setAll(counts) {
+      Object.assign(this, counts);
+    }
+  });
+
+  Alpine.store('grid', {
+    currentTab: 'all',
+    currentHygiene: 'all',
+    currentPage: 1,
+    totalRows: 0,
+    onlyMe: false,
+    setTab(tab) {
+      this.currentTab = tab;
+      this.currentPage = 1;
+    }
+  });
+
+  // Sync sidebar collapsed class — x-effect directive is unreliable for store-driven
+  // class toggling on elements with empty x-data; Alpine.effect() at JS level is guaranteed reactive
+  Alpine.effect(() => {
+    const sidebar = document.getElementById('sidebar');
+    if (sidebar) sidebar.classList.toggle('collapsed', Alpine.store('ui').sidebarCollapsed);
+  });
+
+  // Sync panel overlay open/close
+  Alpine.effect(() => {
+    const overlay = document.getElementById('slide-out-overlay');
+    if (overlay) overlay.classList.toggle('open', Alpine.store('ui').panelOpen);
+  });
+
+  // Sync right intel panel collapsed class + chevron rotation
+  Alpine.effect(() => {
+    const collapsed = Alpine.store('ui').panelRightCollapsed;
+    const intel = document.querySelector('.pp-intel');
+    if (intel) intel.classList.toggle('pp-intel-collapsed', collapsed);
+    const chevron = document.querySelector('.pp-chevron-svg');
+    if (chevron) chevron.classList.toggle('pp-chevron-rotated', collapsed);
+  });
+});
+
+=== FILE: src/routes/pages.js ===
+/**
+ * Page routes — serve full HTML pages.
+ * These are NOT behind authMiddleware because the auth guard
+ * runs client-side in public/js/app.js (localStorage check).
+ * The server-rendered shell passes user data from the JWT
+ * only when a valid token is decoded; otherwise it passes empty user.
+ */
+const express = require('express');
+const router = express.Router();
+const { verifyAccessToken } = require('../services/tokenService');
+const { pool } = require('../config/db');
+
+/** Extract user from Authorization header, non-throwing */
+async function tryGetUser(req) {
+  try {
+    const auth = req.headers.authorization || '';
+    if (!auth.startsWith('Bearer ')) return null;
+    const payload = verifyAccessToken(auth.slice(7));
+    const { rows } = await pool.query(
+      `SELECT u.id, u.display_name, u.full_name, u.is_on_break, u.csr_level,
+              r.name AS role_name
+       FROM users u
+       JOIN roles r ON r.id = u.role_id
+       WHERE u.id = $1 AND u.is_active = true`,
+      [payload.user_id]
+    );
+    return rows[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+/** GET / — redirect to dashboard or login */
+router.get('/', (req, res) => {
+  res.redirect('/dashboard');
+});
+
+/** GET /login — login page */
+router.get('/login', (req, res) => {
+  res.render('pages/login');
+});
+
+/** GET /dashboard — main app shell */
+router.get('/dashboard', async (req, res) => {
+  // Try to read actual user from DB (token is in Authorization header on HTMX loads,
+  // but may be absent on hard refresh since it lives in localStorage not cookies)
+  const dbUser = await tryGetUser(req);
+  const user = dbUser || { display_name: '', role_name: 'CSR', is_on_break: false };
+
+  res.render('layouts/shell', {
+    body: '',     // body will be filled by HTMX on first load
+    user,
+    title: 'Workspace',
+    activePage: 'workspace',
+  });
+});
+
+/** GET /preview/panel — slide-out panel with hardcoded data (no DB required) */
+router.get('/preview/panel', (req, res) => {
+  res.locals.previewMode = true;
+  const order = {
+    id: 1, order_id: 'FJAMG1271', status: 'Interested',
+    customer_name: 'Faith Ajogbor', phone_number: '+2349010641483', other_phone: null,
+    row_num: 10000,
+    email: 'faitheee@yahoo.com', sex: 'Female', comments: 'Sent to Agent',
+    product_id: 1, product_name: 'Temique Stretchmarks Gel', product_variant_id: 1, colour: 'Red',
+    price: 19500, quantity: 1, has_order_bump: false,
+    order_bump_product_id: null, order_bump_quantity: 0, order_bump_price: 0,
+    admin_level_1_id: 16, state_name: 'Imo', admin_level_2_id: 101, lga_name: 'Oru East',
+    city: 'Owerri', full_address: '12 Ugbaja Street',
+    agent_id: 5, agent_name: 'Parcel Exchange', agent_phone: '+2348012345678', agent_wa_link: 'https://chat.whatsapp.com/example',
+    logistics_fee: 1500, date_paid: null,
+    ordered_at: '2026-03-25', first_contact_at: null, assigned_weekday: 'Wednesday',
+    csr_name: 'Ayomide', assigned_csr_id: 2,
+    customer_id: 1, is_banned: false, total_purchases: 4, customer_total_orders: 5,
+    lifetime_value: 118900, customer_tag: 'Verified Buyer', csr_notes: null, first_order_date: '2025-11-10',
+    failure_reason_id: null,
+    updated_at: '2026-03-26T14:22:00Z',
+    api_batch_id: 'pabbly_batch_20260325_143822_abc',
+  };
+  const panelHtml = require('ejs').render(
+    require('fs').readFileSync(require('path').join(__dirname, '../views/partials/slide-out-panel.ejs'), 'utf8'),
+    { order }
+  );
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Panel Preview</title>
+  <link rel="stylesheet" href="/css/app.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script>
+    document.addEventListener('alpine:init', () => {
+      Alpine.store('ui', {
+        panelRightCollapsed: false,
+        hasUnsavedChanges: false,
+        panelOpen: true,
+        closePanel() { this.panelOpen = false; this.hasUnsavedChanges = false; }
+      });
+      Alpine.effect(() => {
+        const collapsed = Alpine.store('ui').panelRightCollapsed;
+        const el = document.querySelector('.pp-intel');
+        if (el) el.classList.toggle('pp-intel-collapsed', collapsed);
+        const chevron = document.querySelector('.pp-chevron-svg');
+        if (chevron) chevron.classList.toggle('pp-chevron-rotated', collapsed);
+      });
+    });
+  </script>
+</head>
+<body style="margin:0;background:#F3F4F6;" x-data>
+  <!-- Simulated grid background behind overlay -->
+  <div style="padding:20px;font-family:Inter,system-ui,sans-serif;">
+    <div style="background:#fff;border-radius:8px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
+      <div style="font-size:0.8rem;color:#9CA3AF;border-bottom:1px solid #E5E7EB;padding-bottom:8px;margin-bottom:8px;">Order Grid (simulated background)</div>
+      <div style="font-size:0.75rem;color:#D1D5DB;">10000 &nbsp; FJAMG1271 &nbsp; Ohambele &nbsp; 25/03/26 &nbsp; FAITH AJOGBOR &nbsp; Temique Stretchmarks &nbsp; Red &nbsp; N19,500</div>
+      <div style="font-size:0.75rem;color:#D1D5DB;margin-top:4px;">9999 &nbsp; FJAME1778 &nbsp; Ayomide &nbsp; 25/03/26 &nbsp; Isah Musa &nbsp; Temique Stretchmarks &nbsp; Blue &nbsp; N19,500</div>
+      <div style="font-size:0.75rem;color:#D1D5DB;margin-top:4px;">9998 &nbsp; FJAME1777 &nbsp; Doyin &nbsp; 25/03/26 &nbsp; Awo Stella Ezinne &nbsp; DarkSpot Serum &nbsp; Green &nbsp; N19,500</div>
+    </div>
+  </div>
+  <!-- Semi-transparent overlay -->
+  <div style="position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;padding:24px;">
+    <div style="width:90vw;max-width:1200px;height:90vh;background:#fff;border-radius:12px;box-shadow:0 25px 60px rgba(0,0,0,0.3);display:flex;flex-direction:column;overflow:hidden;">
+      ${panelHtml}
+    </div>
+  </div>
+</body>
+</html>`;
+  res.send(html);
+});
+
+module.exports = router;
+
+=== FILE: src/middleware/authMiddleware.js ===
+const { pool } = require('../config/db');
+const { verifyAccessToken } = require('../services/tokenService');
+
+/**
+ * JWT authentication middleware.
+ *
+ * Security gates (in order):
+ * 1. Authorization header must be present with Bearer scheme
+ * 2. Access token must have a valid signature and not be expired
+ * 3. User must exist in the database
+ * 4. User account must be active (is_active = true)
+ * 5. token_version in JWT payload must match token_version in DB
+ *    — any mismatch means the token was issued before a logout or password change
+ *
+ * On success: attaches req.user with { id, role_id, role_name, token_version }
+ * On failure: returns 401 with a generic message (no information leakage)
+ */
+async function authMiddleware(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ message: 'Authentication required' });
+  }
+
+  const token = authHeader.split(' ')[1];
+
+  // Gate 1: Verify JWT signature and expiry
+  let payload;
+  try {
+    payload = verifyAccessToken(token);
+  } catch (err) {
+    const message =
+      err.name === 'TokenExpiredError'
+        ? 'Token expired'
+        : 'Invalid token';
+    return res.status(401).json({ message });
+  }
+
+  // Gate 2: Load user + role from database
+  let user;
+  try {
+    const result = await pool.query(
+      `SELECT u.id, u.role_id, r.name AS role_name, u.token_version, u.is_active
+       FROM users u
+       JOIN roles r ON r.id = u.role_id
+       WHERE u.id = $1`,
+      [payload.user_id]
+    );
+    user = result.rows[0];
+  } catch (err) {
+    console.error('[Auth] DB query failed:', err.message);
+    if (process.env.NODE_ENV !== 'development') {
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+    // Development fallback: trust JWT payload when DB is unreachable
+    user = { id: payload.user_id, role_id: null, role_name: payload.role || 'CSR', token_version: payload.token_version, is_active: true };
+  }
+
+  if (!user) {
+    return res.status(401).json({ message: 'Invalid token' });
+  }
+
+  // Gate 3: Account must be active
+  // MODULE 5 REQUIREMENT: When setting is_active = false, MUST also increment token_version
+  // atomically: UPDATE users SET is_active = false, token_version = token_version + 1 WHERE id = $1
+  // This ensures existing tokens are rejected at Gate 4 even if this gate is somehow bypassed.
+  if (!user.is_active) {
+    return res.status(401).json({ message: 'Account deactivated' });
+  }
+
+  // Gate 4: token_version must match — this is the stateless invalidation check
+  // Skip in development when DB fallback was used (token_version may be undefined)
+  if (user.role_id !== null && payload.token_version !== user.token_version) {
+    return res.status(401).json({ message: 'Session invalidated' });
+  }
+
+  // Attach user context to request
+  req.user = {
+    id: user.id,
+    role_id: user.role_id,
+    role_name: user.role_name,
+    token_version: user.token_version,
+  };
+
+  // Fire-and-forget: update last_active_at on most recent open session.
+  // FIX 2: PostgreSQL does not support ORDER BY / LIMIT in UPDATE directly — use subquery.
+  pool
+    .query(
+      `UPDATE session_log
+       SET last_active_at = now()
+       WHERE id = (
+         SELECT id FROM session_log
+         WHERE user_id = $1 AND logged_out_at IS NULL
+         ORDER BY id DESC
+         LIMIT 1
+       )`,
+      [user.id]
+    )
+    .catch((err) => {
+      console.error('[Session] last_active_at update failed:', err.message);
+    });
+
+  next();
+}
+
+module.exports = authMiddleware;
+
