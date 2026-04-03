@@ -5,6 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title><%= typeof title !== 'undefined' ? title + ' — ' : '' %>Jamisan ERP</title>
 
+  <!-- JWT injection — MUST be registered before HTMX loads so hx-trigger="load" gets the token -->
+  <script>
+    document.addEventListener('htmx:configRequest', function(event) {
+      var token = localStorage.getItem('accessToken');
+      if (token) {
+        event.detail.headers['Authorization'] = 'Bearer ' + token;
+      }
+    });
+  </script>
+
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
 
@@ -17,13 +27,6 @@
 
   <!-- App styles -->
   <link rel="stylesheet" href="/css/app.css">
-  <!-- Early JWT injection — must run before HTMX fires hx-trigger="load" -->
-  <script>
-    document.addEventListener('htmx:configRequest', function(e) {
-      var t = localStorage.getItem('accessToken');
-      if (t) e.detail.headers['Authorization'] = 'Bearer ' + t;
-    }, true);
-  </script>
 </head>
 <body hx-ext="json-enc" x-data data-on-break="<%= (locals.user && locals.user.is_on_break) ? 'true' : 'false' %>">
 
@@ -46,7 +49,7 @@
     <div id="page-content"
          style="flex:1;overflow:hidden;display:flex;flex-direction:column;"
          hx-get="/api/csr/dashboard"
-         hx-trigger="load"
+         hx-trigger="load delay:100ms"
          hx-swap="innerHTML">
       <%- body %>
     </div>
@@ -55,19 +58,15 @@
 
 </div><!-- /#app-shell -->
 
-<!-- ══════════════════════════════════════════ SLIDE-OUT PANEL ══════════════════════════════════ -->
+<!-- ══════════════════════════════════════════ ORDER POPUP PANEL ═════════════════════════════════ -->
 <div id="slide-out-overlay"
-     :class="{ 'open': $store.ui.panelOpen }"
-     @click="$store.ui.closePanel()">
-</div>
-
-<div id="slide-out-panel"
-     :class="{ 'open': $store.ui.panelOpen }"
-     @click.stop>
-  <div id="slide-out-body" style="display:flex;flex-direction:column;height:100%;">
-    <!-- Content injected by HTMX hx-target="#slide-out-body" -->
-    <div style="display:flex;align-items:center;justify-content:center;height:100%;color:#9CA3AF;font-size:0.875rem;">
-      Select an order to view details
+     @click="$store.ui.closePanel()"
+     style="display:none;">
+  <div id="slide-out-panel" @click.stop>
+    <div id="slide-out-body" style="display:flex;flex-direction:column;height:100%;">
+      <div style="display:flex;align-items:center;justify-content:center;height:100%;color:#9CA3AF;font-size:0.875rem;">
+        Select an order to view details
+      </div>
     </div>
   </div>
 </div>
