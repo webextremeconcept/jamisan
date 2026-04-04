@@ -27,4 +27,17 @@ const authLimiter = rateLimit({
   message: { message: 'Too many authentication attempts — try again later' },
 });
 
-module.exports = { globalLimiter, authLimiter };
+/**
+ * CSR interface rate limiter: 900 requests per 15 minutes per IP.
+ * HTMX fires ~10 concurrent requests on dashboard load (grid, hygiene counts,
+ * alert pills, lookups). Global 100/15min would lock out power users immediately.
+ */
+const csrLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 900,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many requests — slow down and try again' },
+});
+
+module.exports = { globalLimiter, authLimiter, csrLimiter };

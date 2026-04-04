@@ -58,6 +58,15 @@ app.use('/webhook', express.json({ limit: '100kb' }), webhookRoutes);
 // Full-page HTML routes (/login, /dashboard, /)
 app.use('/', pageRoutes);
 
+// Redirect non-HTMX browser requests to /api/* back to /dashboard
+// (handles page refresh on hx-push-url API paths)
+app.use('/api', (req, res, next) => {
+  if (req.method === 'GET' && !req.headers['hx-request']) {
+    return res.redirect('/dashboard');
+  }
+  next();
+});
+
 // CSR API routes — JSON body, dedicated rate limiter (900/15min), JWT auth
 // authorize() is applied per-route inside csr.js for role flexibility
 app.use('/api/csr', csrLimiter, express.json({ limit: '1mb' }), authMiddleware, csrRoutes);

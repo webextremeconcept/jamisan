@@ -1219,3 +1219,11 @@ textarea.pp-input { resize: vertical; min-height: 60px; }
   white-space: nowrap;
 }
 .order-id-link:hover { text-decoration: underline; }
+
+/* Slide-out overlay visibility */
+#slide-out-overlay {
+  display: none;
+}
+#slide-out-overlay.open {
+  display: flex;
+}

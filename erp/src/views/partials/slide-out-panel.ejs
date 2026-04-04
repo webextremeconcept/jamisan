@@ -174,7 +174,8 @@ const statusGroups = [
         <select class="pp-input" name="admin_level_1_id" id="panel-state-<%= o.id %>"
                 hx-get="/api/csr/lookups/states-options"
                 hx-trigger="load"
-                hx-swap="innerHTML append"
+                hx-target="this"
+                hx-swap="beforeend"
                 onchange="
                   htmx.ajax('GET', '/api/csr/lookups/lgas?admin_level_1_id=' + this.value, {target: '#panel-lga-<%= o.id %>', swap: 'innerHTML'});
                   htmx.ajax('GET', '/api/csr/lookups/agents-by-state?admin_level_1_id=' + this.value, {target: '#panel-agent-<%= o.id %>', swap: 'innerHTML'});
@@ -219,7 +220,8 @@ const statusGroups = [
         <select class="pp-input" name="product_id"
                 hx-get="/api/csr/lookups/products-options"
                 hx-trigger="load"
-                hx-swap="innerHTML append">
+                hx-target="this"
+                hx-swap="beforeend">
           <option value="">— Select Product —</option>
           <% if (o.product_id) { %><option value="<%= o.product_id %>" selected><%= o.product_name %></option><% } %>
         </select>

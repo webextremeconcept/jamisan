@@ -27,7 +27,7 @@ const active = typeof activeHygiene !== 'undefined' ? activeHygiene : 'all';
             hx-swap="innerHTML"
             hx-push-url="true"
             hx-indicator="#grid-spinner"
-            onclick="document.querySelectorAll('#hygiene-tabs .ht').forEach(function(b){b.className='ht ht-inactive';}); this.className='ht ht-active';"
+            onclick="document.querySelectorAll('#hygiene-tabs .ht').forEach(function(b){b.className='ht ht-inactive';}); this.className='ht ht-active'; localStorage.setItem('lastHygieneTab', '<%= tab.key %>');"
       <%= tab.label %>
       <% if (tab.count > 0) { %>
         <span class="ht-badge"><%= tab.count %></span>

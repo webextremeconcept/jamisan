@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(npm install *)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git checkout:*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(git merge:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(cat:*)",
+      "Bash(ls:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(scp:*)",
+      "Bash(ssh:*)",
+      "Bash(node:*)",
+      "Bash(psql:*)",
+      "Bash(pg_dump:*)",
+      "Bash(kill:*)",
+      "Bash(pkill:*)",
+      "Bash(nohup:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(sed:*)",
+      "Edit(/src/**)",
+      "Edit(/erp/**)",
+      "Edit(/migrations/**)"
+    ]
+  }
+}
