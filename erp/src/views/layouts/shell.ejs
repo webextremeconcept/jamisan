@@ -24,6 +24,24 @@
         window.location.href = '/login';
       }
     });
+
+    // Restore last hygiene tab after dashboard loads (handles browser refresh)
+    document.addEventListener('htmx:afterSwap', function(event) {
+      if (event.detail.target.id === 'page-content') {
+        var lastTab = localStorage.getItem('lastHygieneTab');
+        if (lastTab && lastTab !== 'all') {
+          setTimeout(function() {
+            var btns = document.querySelectorAll('#hygiene-tabs .ht');
+            btns.forEach(function(btn) {
+              var href = btn.getAttribute('hx-get') || '';
+              if (href.indexOf('hygiene=' + lastTab) !== -1) {
+                btn.click();
+              }
+            });
+          }, 200);
+        }
+      }
+    });
   </script>
 
   <!-- Tailwind CSS CDN -->
