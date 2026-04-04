@@ -1,7 +1,8 @@
 module.exports = {
   apps: [{
     name: 'jamisan-erp',
-    script: 'src/server.js',
+    script: '/opt/jamisan-erp/src/server.js',
+    cwd: '/opt/jamisan-erp',
     instances: 1,
     watch: false,
     max_memory_restart: '500M',
