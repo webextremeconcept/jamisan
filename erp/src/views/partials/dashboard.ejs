@@ -103,6 +103,6 @@
 <div id="grid-wrapper">
   <div id="grid-spinner">Loading&hellip;</div>
   <div id="order-table-container">
-    <%- include('./order-grid', { rows, total, page, limit, hygiene, queryString: '' }) %>
+    <%- include('./order-grid', { rows, total, page, limit, hygiene, queryString: '', agents: typeof agents !== 'undefined' ? agents : [] }) %>
   </div>
 </div>

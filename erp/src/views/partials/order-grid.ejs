@@ -46,7 +46,7 @@ const qs = typeof queryString !== 'undefined' ? queryString : ('&hygiene=' + (hy
       <tr class="order-row row-green"><td style="text-align:right;color:#9CA3AF;font-size:0.75rem;padding:0 8px;">9989</td><td style="padding:0 8px;"><span class="order-id-link">FJAME1768</span></td><td style="padding:0 8px;">Doyin</td><td style="padding:0 8px;">25/03/26</td><td style="padding:0 8px;text-align:center;">1</td><td style="padding:0 8px;">Joel Fredrick</td><td style="padding:0 8px;">2347063560691</td><td style="padding:0 8px;">Temique Acne Gel</td><td style="padding:0 8px;">Green</td><td style="padding:0 8px;text-align:right;">&#8358;19,500</td><td style="padding:0 8px;">Lagos</td><td style="padding:0 8px;">Lagos Mainland</td><td style="padding:0 8px;">—</td><td style="padding:0 4px;"><select class="inline-edit" style="width:100%;font-size:0.78rem;"><option selected>To Call Back</option></select></td><td style="padding:0 4px;">Line is busy</td><td style="padding:0 8px;">—</td><td style="padding:0 8px;">Female</td></tr>
     <% } else { %>
       <% rows.forEach(function(row) { %>
-        <%- include('./order-row', { o: row }) %>
+        <%- include('./order-row', { o: row, agents: typeof agents !== 'undefined' ? agents : [] }) %>
       <% }); %>
     <% } %>
   </tbody>

@@ -19,12 +19,14 @@ function esc(str) {
 async function getDashboard(req, res, next) {
   try {
     const { id: userId, role_name: roleName } = req.user;
-    let rows = [], total = 0, page = 1, limit = 150, counts = {};
+    let rows = [], total = 0, page = 1, limit = 150, counts = {}, agents = [];
     try {
       ({ rows, total, page, limit } = await svc.getOrderGrid({ userId, roleName }));
       counts = await svc.getHygieneCounts(userId, roleName);
+      agents = await svc.getAgentsByState(null);
     } catch { /* DB unavailable — render empty state */ }
-    res.render('partials/dashboard', { rows, total, page, limit, hygiene: 'all', counts });
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.render('partials/dashboard', { rows, total, page, limit, hygiene: 'all', counts, agents });
   } catch (err) { next(err); }
 }
 
@@ -44,11 +46,13 @@ async function getOrders(req, res, next) {
       .map(k => '&' + encodeURIComponent(k) + '=' + encodeURIComponent(req.query[k]))
       .join('');
 
-    let rows = [], total = 0;
+    let rows = [], total = 0, agents = [];
     try {
       ({ rows, total } = await svc.getOrderGrid({ userId, roleName, hygiene, page, limit }));
+      agents = await svc.getAgentsByState(null);
     } catch { /* DB unavailable — render empty state */ }
-    res.render('partials/order-grid', { rows, total, page, limit, hygiene, queryString: qs });
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.render('partials/order-grid', { rows, total, page, limit, hygiene, queryString: qs, agents });
   } catch (err) { next(err); }
 }
 
@@ -108,8 +112,10 @@ async function updateOrderCtrl(req, res, next) {
       ipAddress: req.ip,
     });
     if (!order) return res.status(404).json({ message: 'Order not found' });
-    res.set('HX-Trigger', JSON.stringify({ 'order-saved-success': true }));
-    res.render('partials/order-row', { o: order });
+    const agents = await svc.getAgentsByState(null);
+    res.set('HX-Trigger', JSON.stringify({ 'order-saved-success': true, showToast: { message: 'Order saved', type: 'success' } }));
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.render('partials/order-row', { o: order, agents });
   } catch (err) {
     // HTMX does not swap HTML on error status codes — always return 200
     // so the row un-dims (htmx-request class gets removed)
@@ -118,7 +124,8 @@ async function updateOrderCtrl(req, res, next) {
     try {
       // Re-render the ORIGINAL (unchanged) row so the grid stays consistent
       const original = await svc.getOrderById(id, userId, roleName);
-      return res.status(200).render('partials/order-row', { o: original });
+      const agentsList = await svc.getAgentsByState(null).catch(() => []);
+      return res.status(200).render('partials/order-row', { o: original, agents: agentsList });
     } catch (fetchErr) {
       // Fallback: never vaporise the row — return a visible error row
       return res.status(200).send(
@@ -192,6 +199,7 @@ async function getScheduled(req, res, next) {
   try {
     const { id: userId, role_name: roleName } = req.user;
     const rows = await svc.getScheduledOrders(userId, roleName);
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.render('partials/tab-scheduled', { rows });
   } catch (err) { next(err); }
 }
@@ -199,9 +207,11 @@ async function getScheduled(req, res, next) {
 async function getAgents(req, res, next) {
   try {
     const { search, agent_state_filter: stateId } = req.query;
-    const rows = await svc.getAgents({ search, stateId: stateId ? parseInt(stateId) : null });
+    const { role_name: roleName } = req.user;
+    const rows = await svc.getAgents({ search, stateId: stateId ? parseInt(stateId) : null, roleName });
     let states = [];
     try { states = await svc.getStates(); } catch { /* DB unavailable */ }
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.render('partials/tab-agents', { rows, states });
   } catch (err) { next(err); }
 }
@@ -209,6 +219,7 @@ async function getAgents(req, res, next) {
 async function getContacts(req, res, next) {
   try {
     const rows = await svc.getContacts();
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.render('partials/tab-contacts', { rows });
   } catch (err) { next(err); }
 }
@@ -218,6 +229,7 @@ async function getPerformance(req, res, next) {
     const { id: userId } = req.user;
     const { live, history } = await svc.getPerformance(userId);
     const leaderboard = await svc.getLeaderboard();
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.render('partials/tab-performance', { live, history, leaderboard, userId });
   } catch (err) { next(err); }
 }

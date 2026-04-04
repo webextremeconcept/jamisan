@@ -122,9 +122,19 @@ const statusGroups = [
   <%/* 12 — LGA */%>
   <td style="width:100px;padding:0 8px;"><%= o.lga_name || '—' %></td>
 
-  <%/* 13 — Agent */%>
-  <td style="width:150px;padding:0 8px;max-width:150px;overflow:hidden;text-overflow:ellipsis;">
-    <%= o.agent_name || '—' %>
+  <%/* 13 — Agent (inline dropdown) */%>
+  <td style="width:150px;padding:0 4px;">
+    <select class="inline-edit" name="agent_id"
+            hx-patch="/api/csr/orders/<%= o.id %>"
+            hx-target="closest tr"
+            hx-swap="outerHTML"
+            hx-trigger="change"
+            style="width:100%;font-size:0.78rem;">
+      <option value="">Unassigned</option>
+      <% (typeof agents !== 'undefined' ? agents : []).forEach(function(ag) { %>
+        <option value="<%= ag.id %>"<%= o.agent_id === ag.id ? ' selected' : '' %>><%= ag.name %></option>
+      <% }); %>
+    </select>
   </td>
 
   <%/* 14 — Status dropdown — NO hx-* on select; Alpine intercepts change */%>

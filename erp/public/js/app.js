@@ -221,6 +221,17 @@ document.addEventListener('alpine:init', () => {
     toggleRightPanel() {
       this.panelRightCollapsed = !this.panelRightCollapsed;
     },
+    navigateOrder(direction) {
+      if (!this.currentOrderId) return;
+      var currentRow = document.getElementById('order-row-' + this.currentOrderId);
+      if (!currentRow) return;
+      var targetRow = direction === 'next' ? currentRow.nextElementSibling : currentRow.previousElementSibling;
+      if (!targetRow || !targetRow.classList.contains('order-row')) return;
+      var rowId = targetRow.id.replace('order-row-', '');
+      if (!rowId) return;
+      this.currentOrderId = parseInt(rowId);
+      htmx.ajax('GET', '/api/csr/orders/' + rowId, { target: '#slide-out-body', swap: 'innerHTML' });
+    },
     cancelStatusChange() {
       // Reset the dropdown if user cancels a modal
       const change = this.pendingStatusChange;

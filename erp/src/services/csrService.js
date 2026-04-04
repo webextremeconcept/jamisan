@@ -53,24 +53,23 @@ function csrFilter(roleName, userId, params) {
   return '';
 }
 
-/** Build hygiene WHERE clause */
+/** Build hygiene WHERE clause — must match getHygieneCounts FILTER conditions exactly */
 function hygieneClause(hygiene, params) {
-  const now = `now()`;
   switch (hygiene) {
     case 'skipped':
-      return `AND o.status = 'Interested' AND o.ordered_at < ${now} - interval '25 hours' AND o.ordered_at >= ${now} - interval '7 days'`;
+      return `AND o.status = 'CSR Skipped'`;
     case 'no_comments':
-      return `AND (o.comments IS NULL OR o.comments = '') AND o.status <> 'Interested' AND o.ordered_at >= ${now} - interval '7 days'`;
+      return `AND (o.comments IS NULL OR o.comments = '')`;
     case 'pending':
-      return `AND o.status = 'Pending' AND o.ordered_at >= ${now} - interval '7 days'`;
+      return `AND o.status = 'Pending' AND o.ordered_at < now() - interval '4 days'`;
     case 'no_logistics_fee':
-      return `AND o.status = 'Cash Paid' AND (o.logistics_fee IS NULL OR o.logistics_fee = 0) AND o.ordered_at >= ${now} - interval '90 days'`;
+      return `AND o.status = 'Cash Paid' AND (o.logistics_fee IS NULL OR o.logistics_fee = 0)`;
     case 'no_date_paid':
       return `AND o.status = 'Cash Paid' AND o.date_paid IS NULL`;
     case 'abandoned':
-      return `AND o.status = 'Abandoned' AND o.ordered_at >= ${now} - interval '7 days'`;
+      return `AND o.status = 'Abandoned'`;
     case 'try_again':
-      return `AND o.status IN ('Not Picking Calls','Will Call Me Back','To Call Back','Not Reachable') AND o.ordered_at >= ${now} - interval '72 hours'`;
+      return `AND o.status IN ('Not Picking Calls','Switched Off','Will Call Me Back','To Call Back')`;
     default:
       return ''; // 'all'
   }
@@ -208,23 +207,18 @@ async function getHygieneCounts(userId, roleName) {
   const { rows } = await pool.query(`
     SELECT
       COUNT(*) FILTER (
-        WHERE status = 'Interested'
-          AND ordered_at < now() - interval '25 hours'
-          AND ordered_at >= now() - interval '7 days'
+        WHERE status = 'CSR Skipped'
       )::int AS skipped,
       COUNT(*) FILTER (
         WHERE (comments IS NULL OR comments = '')
-          AND status <> 'Interested'
-          AND ordered_at >= now() - interval '7 days'
       )::int AS no_comments,
       COUNT(*) FILTER (
         WHERE status = 'Pending'
-          AND ordered_at >= now() - interval '7 days'
+          AND ordered_at < now() - interval '4 days'
       )::int AS pending,
       COUNT(*) FILTER (
         WHERE status = 'Cash Paid'
           AND (logistics_fee IS NULL OR logistics_fee = 0)
-          AND ordered_at >= now() - interval '90 days'
       )::int AS no_logistics_fee,
       COUNT(*) FILTER (
         WHERE status = 'Cash Paid'
@@ -232,14 +226,12 @@ async function getHygieneCounts(userId, roleName) {
       )::int AS no_date_paid,
       COUNT(*) FILTER (
         WHERE status = 'Abandoned'
-          AND ordered_at >= now() - interval '7 days'
       )::int AS abandoned,
       COUNT(*) FILTER (
-        WHERE status IN ('Not Picking Calls','Will Call Me Back','To Call Back','Not Reachable')
-          AND ordered_at >= now() - interval '72 hours'
+        WHERE status IN ('Not Picking Calls','Switched Off','Will Call Me Back','To Call Back')
       )::int AS try_again
-    FROM orders
-    WHERE is_test = false
+    FROM orders o
+    WHERE o.is_test = false
     ${ownership}
   `, params);
 
@@ -522,9 +514,11 @@ async function getFailureReasons(status) {
 /**
  * Agents directory (full list for Agents tab).
  */
-async function getAgents({ search, stateId }) {
+async function getAgents({ search, stateId, roleName = 'CSR' }) {
   const params = [];
-  const conditions = ['ag.is_active = true'];
+  const conditions = [];
+  // CSR sees only active agents; Ops Manager/Director sees all
+  if (roleName === 'CSR') conditions.push('ag.is_active = true');
   if (search) {
     params.push(`%${search}%`);
     conditions.push(`(ag.name ILIKE $${params.length} OR ag.contact_name ILIKE $${params.length})`);

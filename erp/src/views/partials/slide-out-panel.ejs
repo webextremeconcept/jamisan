@@ -38,7 +38,15 @@ const statusGroups = [
 <!-- ═══ TOP ACTION BAR ═══ -->
 <div class="pp-topbar" x-data="{ confirmLeave: false }">
   <div class="pp-topbar-left">
-    <!-- Nav buttons hidden when no prev/next available (Phase 5 nav not wired yet) -->
+    <!-- Up/Down order navigation -->
+    <button class="pp-circle-orange" title="Previous order"
+            onclick="Alpine.store('ui').navigateOrder('prev')">
+      <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7"/></svg>
+    </button>
+    <button class="pp-circle-orange" title="Next order"
+            onclick="Alpine.store('ui').navigateOrder('next')">
+      <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+    </button>
     <button class="pp-circle-orange" title="Save" type="submit" form="pp-form-<%= o.id %>">
       <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17 21H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
     </button>
@@ -98,7 +106,7 @@ const statusGroups = [
           hx-swap="outerHTML"
           hx-ext="json-enc"
           x-on:change="$store.ui.hasUnsavedChanges = true"
-          @order-saved-success.window="$store.ui.panelOpen = false; $store.ui.hasUnsavedChanges = false;">
+          @order-saved-success.window="$store.ui.hasUnsavedChanges = false;">
 
       <!-- Phone Number -->
       <div class="pp-row">
