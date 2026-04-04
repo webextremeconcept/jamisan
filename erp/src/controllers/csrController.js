@@ -52,7 +52,34 @@ async function getOrders(req, res, next) {
   } catch (err) { next(err); }
 }
 
-/* ══ Slide-out panel (Phase 4 stub) ══ */
+/* ══ New order panel — Workflow B (blank form) ══ */
+
+async function getNewOrderPanel(req, res, next) {
+  try {
+    const { id: userId, role_name: roleName, display_name } = req.user;
+    // Build a blank order object with sensible defaults
+    const order = {
+      id: null, order_id: 'NEW', row_num: '', status: 'Interested',
+      customer_name: '', phone_number: '', other_phone: '', email: '',
+      sex: '', comments: '', product_id: null, product_name: '', product_variant_id: null, colour: '',
+      price: '', quantity: 1, has_order_bump: false, order_bump_product_id: null,
+      order_bump_quantity: 0, order_bump_price: 0,
+      admin_level_1_id: null, state_name: '', admin_level_2_id: null, lga_name: '',
+      city: '', full_address: '',
+      agent_id: null, agent_name: '', agent_phone: '', agent_wa_link: '',
+      logistics_fee: '', date_paid: null, scheduled_date: null,
+      ordered_at: new Date(), first_contact_at: null, updated_at: new Date(),
+      assigned_weekday: '', api_batch_id: '',
+      csr_name: display_name || 'CSR', assigned_csr_id: userId,
+      customer_id: null, is_banned: false, total_purchases: 0,
+      customer_total_orders: 0, lifetime_value: 0, customer_tag: '', csr_notes: '',
+      first_order_date: null, failure_reason_id: null,
+    };
+    res.render('partials/slide-out-panel', { order });
+  } catch (err) { next(err); }
+}
+
+/* ══ Slide-out panel — existing order ══ */
 
 async function getOrderPanel(req, res, next) {
   try {
@@ -265,6 +292,7 @@ async function getFailureReasonsOptions(req, res, next) {
 module.exports = {
   getDashboard,
   getOrders,
+  getNewOrderPanel,
   getOrderPanel,
   updateOrderCtrl,
   getOrderHistory,

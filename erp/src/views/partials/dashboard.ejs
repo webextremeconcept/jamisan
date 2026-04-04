@@ -93,8 +93,11 @@
            onkeydown="if(event.key==='Escape'){this.style.display='none';this.value='';} if(event.key==='Enter'&&this.value.trim()){htmx.ajax('GET','/api/csr/orders?page=1&search='+encodeURIComponent(this.value.trim())+'&hygiene=all',{target:'#order-table-container',swap:'innerHTML'});}">
   </div>
 
-  <!-- New Order button (right-aligned) -->
-  <button class="action-btn-new">New</button>
+  <!-- New Order button (right-aligned) — opens panel in Workflow B mode -->
+  <button class="action-btn-new"
+          onclick="Alpine.store('ui').panelOpen = true; Alpine.store('ui').currentOrderId = null; htmx.ajax('GET', '/api/csr/orders/new', {target:'#slide-out-body', swap:'innerHTML'});">
+    New
+  </button>
 </div>
 
 <div id="grid-wrapper">

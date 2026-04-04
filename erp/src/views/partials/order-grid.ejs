@@ -17,22 +17,22 @@ const qs = typeof queryString !== 'undefined' ? queryString : ('&hygiene=' + (hy
   <thead>
     <tr>
       <th style="width:44px;text-align:right;">#</th>
-      <th style="width:110px;">Order ID</th>
-      <th style="width:100px;">CSR</th>
-      <th style="width:90px;">Date</th>
-      <th style="width:46px;text-align:center;">DFO</th>
-      <th style="width:150px;">Customer</th>
+      <th style="width:110px;" class="sortable-th" onclick="sortGrid(this, 1)">Order ID</th>
+      <th style="width:100px;" class="sortable-th" onclick="sortGrid(this, 2)">CSR</th>
+      <th style="width:90px;" class="sortable-th" onclick="sortGrid(this, 3)">Date</th>
+      <th style="width:46px;text-align:center;" class="sortable-th" onclick="sortGrid(this, 4)">DFO</th>
+      <th style="width:150px;" class="sortable-th" onclick="sortGrid(this, 5)">Customer</th>
       <th style="width:130px;">Phone</th>
-      <th style="width:160px;">Product</th>
-      <th style="width:80px;">Colour</th>
-      <th style="width:90px;text-align:right;">Price</th>
-      <th style="width:100px;">State</th>
-      <th style="width:100px;">LGA</th>
-      <th style="width:150px;">Agent</th>
-      <th style="width:175px;">Status</th>
+      <th style="width:160px;" class="sortable-th" onclick="sortGrid(this, 7)">Product</th>
+      <th style="width:80px;" class="sortable-th" onclick="sortGrid(this, 8)">Colour</th>
+      <th style="width:90px;text-align:right;" class="sortable-th" onclick="sortGrid(this, 9)">Price</th>
+      <th style="width:100px;" class="sortable-th" onclick="sortGrid(this, 10)">State</th>
+      <th style="width:100px;" class="sortable-th" onclick="sortGrid(this, 11)">LGA</th>
+      <th style="width:150px;" class="sortable-th" onclick="sortGrid(this, 12)">Agent</th>
+      <th style="width:175px;" class="sortable-th" onclick="sortGrid(this, 13)">Status</th>
       <th style="min-width:180px;">Comments</th>
-      <th style="width:90px;">Date Paid</th>
-      <th style="width:60px;">Sex</th>
+      <th style="width:90px;" class="sortable-th" onclick="sortGrid(this, 15)">Date Paid</th>
+      <th style="width:60px;" class="sortable-th" onclick="sortGrid(this, 16)">Sex</th>
     </tr>
   </thead>
   <tbody>

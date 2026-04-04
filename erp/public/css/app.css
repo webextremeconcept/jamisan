@@ -532,6 +532,9 @@ body {
   opacity: 1;
   color: #374151;
 }
+.sortable-th { cursor: pointer; user-select: none; }
+.sortable-th[data-sort-dir="asc"]::after  { content: ' ∧' !important; color: #F59E0B !important; opacity: 1 !important; }
+.sortable-th[data-sort-dir="desc"]::after { content: ' ∨' !important; color: #F59E0B !important; opacity: 1 !important; }
 
 #order-table thead th:first-child,
 #order-table tbody td:first-child {
@@ -654,31 +657,30 @@ tr.htmx-request {
 
 /* (alert-pills removed — counts now shown as badges on hygiene tabs) */
 
-/* ── Slide-out panel ── */
+/* ── Order popup panel (centered overlay) ── */
 #slide-out-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.4);
+  background: rgba(0,0,0,0.6);
   z-index: 100;
   display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 4vh 4vw;
 }
-#slide-out-overlay.open { display: block; }
+#slide-out-overlay.open { display: flex; }
 
 #slide-out-panel {
-  position: fixed;
-  top: 0;
-  right: 0;
-  width: 75vw;
-  height: 100vh;
+  width: 92vw;
+  max-width: 1200px;
+  height: 92vh;
   background: #fff;
-  z-index: 101;
+  border-radius: 12px;
+  box-shadow: 0 25px 60px rgba(0,0,0,0.3);
   display: flex;
   flex-direction: column;
-  transform: translateX(100%);
-  transition: transform 0.25s ease;
-  box-shadow: -4px 0 24px rgba(0,0,0,0.15);
+  overflow: hidden;
 }
-#slide-out-panel.open { transform: translateX(0); }
 
 /* ── Panel internals: mockup-matching popup layout ── */
 

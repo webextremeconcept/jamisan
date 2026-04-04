@@ -42,11 +42,13 @@ const ALLOWED_UPDATE_FIELDS = new Set([
 
 /* ── Helpers ── */
 
-/** Determine whether to add CSR ownership filter */
+/** CSR ownership + department filter. Managers/Directors see all. */
 function csrFilter(roleName, userId, params) {
   if (roleName === 'CSR') {
     params.push(userId);
-    return `AND o.assigned_csr_id = $${params.length}`;
+    const userIdx = params.length;
+    return `AND o.assigned_csr_id = $${userIdx}
+            AND o.department_id IN (SELECT ud.department_id FROM user_departments ud WHERE ud.user_id = $${userIdx})`;
   }
   return '';
 }

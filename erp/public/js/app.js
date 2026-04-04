@@ -109,6 +109,39 @@ async function copyOrderText(orderId) {
 }
 window.copyOrderText = copyOrderText;
 
+/* ── Client-side column sort for the order grid ── */
+function sortGrid(th, colIdx) {
+  const table = document.getElementById('order-table');
+  if (!table) return;
+  const tbody = table.querySelector('tbody');
+  const rows = Array.from(tbody.querySelectorAll('tr.order-row'));
+  if (rows.length === 0) return;
+
+  // Toggle sort direction
+  const asc = th.dataset.sortDir !== 'asc';
+  // Reset all headers
+  table.querySelectorAll('.sortable-th').forEach(h => { h.dataset.sortDir = ''; });
+  th.dataset.sortDir = asc ? 'asc' : 'desc';
+
+  rows.sort((a, b) => {
+    const aCell = a.cells[colIdx];
+    const bCell = b.cells[colIdx];
+    if (!aCell || !bCell) return 0;
+    const aVal = (aCell.querySelector('select') || aCell.querySelector('input') || aCell).textContent.trim();
+    const bVal = (bCell.querySelector('select') || bCell.querySelector('input') || bCell).textContent.trim();
+    // Try numeric comparison
+    const aNum = parseFloat(aVal.replace(/[^\d.-]/g, ''));
+    const bNum = parseFloat(bVal.replace(/[^\d.-]/g, ''));
+    if (!isNaN(aNum) && !isNaN(bNum)) {
+      return asc ? aNum - bNum : bNum - aNum;
+    }
+    return asc ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+  });
+
+  rows.forEach(r => tbody.appendChild(r));
+}
+window.sortGrid = sortGrid;
+
 /* ── Status change handler (Alpine calls this) ── */
 /* Decides whether to open a modal or fire HTMX directly */
 function handleStatusChange(event, orderId, currentStatus, selectEl) {

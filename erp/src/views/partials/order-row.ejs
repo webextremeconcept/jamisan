@@ -60,10 +60,8 @@ const statusGroups = [
   <%/* 2 — Order ID (opens slide-out) */%>
   <td style="width:110px;padding:0 8px;">
     <a class="order-id-link"
-       hx-get="/api/csr/orders/<%= o.id %>"
-       hx-target="#slide-out-body"
-       hx-swap="innerHTML"
-       @click="$store.ui.panelOpen = true; $store.ui.currentOrderId = <%= o.id %>">
+       href="#"
+       onclick="event.preventDefault(); event.stopPropagation(); Alpine.store('ui').panelOpen = true; Alpine.store('ui').currentOrderId = <%= o.id %>; htmx.ajax('GET', '/api/csr/orders/<%= o.id %>', {target:'#slide-out-body', swap:'innerHTML'});">
       <%= o.order_id %>
     </a>
   </td>
@@ -99,8 +97,19 @@ const statusGroups = [
     <%= o.product_name || '—' %>
   </td>
 
-  <%/* 9 — Colour */%>
-  <td style="width:80px;padding:0 8px;"><%= o.colour || '—' %></td>
+  <%/* 9 — Colour (inline editable) */%>
+  <td style="width:80px;padding:0 4px;">
+    <input type="text"
+           class="inline-edit"
+           name="colour"
+           value="<%= o.colour || '' %>"
+           placeholder="—"
+           hx-patch="/api/csr/orders/<%= o.id %>"
+           hx-target="closest tr"
+           hx-swap="outerHTML"
+           hx-trigger="change"
+           style="width:100%;min-width:60px;">
+  </td>
 
   <%/* 10 — Price */%>
   <td style="width:90px;padding:0 8px;text-align:right;font-variant-numeric:tabular-nums;">
@@ -123,7 +132,7 @@ const statusGroups = [
     <select class="inline-edit"
             name="status"
             data-current-status="<%= o.status %>"
-            x-on:change="handleStatusChange($event, <%= o.id %>, this.dataset.currentStatus, this)"
+            onchange="handleStatusChange(event, <%= o.id %>, this.dataset.currentStatus, this)"
             style="width:100%;font-size:0.78rem;">
       <% statusGroups.forEach(function(grp) { %>
         <optgroup label="<%= grp.label %>">

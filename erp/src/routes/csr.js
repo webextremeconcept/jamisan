@@ -13,6 +13,7 @@ const csr = authorize('CSR', 'Operations_Manager', 'Director');
 /* ── Dashboard & orders ── */
 router.get('/dashboard',                csr, ctrl.getDashboard);
 router.get('/orders',                   csr, ctrl.getOrders);
+router.get('/orders/new',               csr, ctrl.getNewOrderPanel);
 router.get('/orders/:id',               csr, ctrl.getOrderPanel);
 router.patch('/orders/:id',             csr, ctrl.updateOrderCtrl);
 router.get('/orders/:id/history',       csr, ctrl.getOrderHistory);
@@ -38,5 +39,7 @@ router.get('/lookups/agents-by-state',  csr, ctrl.getAgentsByState);
 router.get('/lookups/products',         csr, ctrl.getProducts);
 router.get('/lookups/failure-reasons',  csr, ctrl.getFailureReasons);
 router.get('/lookups/failure-reasons-options', csr, ctrl.getFailureReasonsOptions);
+router.get('/lookups/states-options',          csr, ctrl.getStatesOptions);
+router.get('/lookups/products-options',         csr, ctrl.getProductsOptions);
 
 module.exports = router;
